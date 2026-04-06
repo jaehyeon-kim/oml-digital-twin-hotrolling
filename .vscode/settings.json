@@ -1,0 +1,20 @@
+{
+  "files.watcherExclude": {
+    "**/venv": true
+  },
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.tabSize": 2,
+  "[python]": {
+    "editor.tabSize": 4,
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "charliermarsh.ruff"
+  },
+  "python.terminal.activateEnvironment": false,
+  "[kotlin]": {
+    "editor.defaultFormatter": "fwcd.kotlin"
+  },
+  "terminal.integrated.suggest.enabled": false,
+  "java.server.launchMode": "LightWeight",
+  "java.errors.incompleteClasspath.severity": "ignore"
+}
