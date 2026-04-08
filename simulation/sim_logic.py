@@ -104,13 +104,18 @@ def roll_slab(
             pass_cfg = env.registry.get_config(pass_path)
             yield env.timeout(sampler.sample(pass_cfg))
 
-            reference_wear = int(
-                env.registry.get(
-                    f"HotRolling.containers.wear_{product_type}.current_cap"
-                ).value
-            )
-            # Add +/- 2% random variation to simulate slight differences between parallel lines
+            raw_wear = env.registry.get(
+                f"HotRolling.containers.wear_{product_type}.current_cap"
+            ).value
+
+            # Clean Start Logic: If it's at the floor (0.001), treat as 0.
+            # Otherwise, keep the precision.
+            reference_wear = 0.0 if raw_wear <= 0.001 else raw_wear
+
+            # Add +/- 2% variation to simulate parallel line differences
+            # If reference_wear is 0.0, local_wear stays 0.0 (Pure baseline)
             local_wear = reference_wear * sampler.rng.uniform(0.98, 1.02)
+
             actual_force = calculate_actual_force(baseline, local_wear, sampler.rng)
 
             gt_event = GroundTruthEvent(
