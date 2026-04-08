@@ -7,11 +7,13 @@ import os
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
 
 # Egress Topics (Data sent out by the simulator)
-TOPIC_PREDICTION_REQUESTS = "event-a-predictions"
-TOPIC_GROUND_TRUTH = "event-b-actuals"
+TOPIC_PREDICTION_REQUESTS = "mill-predictions"
+TOPIC_GROUND_TRUTH = "mill-groundtruth"
+TOPIC_TELEMETRY = "sim-telemetry"
+TOPIC_LIFECYCLE = "sim-lifecycle"
 
-# Ingress Topic (Commands received from the NiceGUI dashboard)
-TOPIC_CONTROL_INGRESS = "sim-control-ingress"
+# Ingress Topic (Commands received from external system)
+TOPIC_CONTROL_INGRESS = "sim-controls"
 
 
 # ==========================================
