@@ -114,7 +114,9 @@ def roll_slab(
 
             # Add +/- 2% variation to simulate parallel line differences
             # If reference_wear is 0.0, local_wear stays 0.0 (Pure baseline)
-            local_wear = reference_wear * sampler.rng.uniform(0.98, 1.02)
+            # Also, ensuers the maximum value to be 100.0 by taking the min
+            # of reference_wear * multiplier and 100.0,
+            local_wear = min(100.0, reference_wear * sampler.rng.uniform(0.98, 1.02))
 
             actual_force = calculate_actual_force(baseline, local_wear, sampler.rng)
 
@@ -123,7 +125,9 @@ def roll_slab(
                 identifiers=GroundTruthIdentifiers(
                     slab_id=slab_id, pass_number=pass_num
                 ),
-                ground_truth=GroundTruthMetrics(actual_roll_force_kn=actual_force),
+                ground_truth=GroundTruthMetrics(
+                    actual_roll_force_kn=actual_force, wear_level=local_wear
+                ),
             )
             env.publish_event(f"GT-{task_key_pass}", gt_event.model_dump(mode="json"))
 

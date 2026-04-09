@@ -137,6 +137,9 @@ class GroundTruthMetrics(BaseModel):
     actual_roll_force_kn: float = Field(
         ge=0.0, description="The true physical force exerted (kilonewtons)."
     )
+    wear_level: float = Field(
+        ge=0.0, le=100.0, description="The wear level of the mill roller."
+    )
 
 
 class GroundTruthEvent(BaseModel):
