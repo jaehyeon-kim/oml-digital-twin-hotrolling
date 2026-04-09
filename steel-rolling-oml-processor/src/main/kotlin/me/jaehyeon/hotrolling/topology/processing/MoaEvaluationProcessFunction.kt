@@ -7,10 +7,12 @@ import me.jaehyeon.hotrolling.domain.model.SgdState
 import me.jaehyeon.hotrolling.domain.model.TargetMeanState
 import org.apache.flink.api.common.state.ValueState
 import org.apache.flink.api.common.state.ValueStateDescriptor
-import org.apache.flink.api.common.typeinfo.Types
+import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.streaming.api.functions.co.KeyedCoProcessFunction
 import org.apache.flink.util.Collector
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 import kotlin.math.abs
 
 class MoaEvaluationProcessFunction(
@@ -18,8 +20,12 @@ class MoaEvaluationProcessFunction(
     private val sgdLearningRate: Double,
     private val sgdDecay: Double,
 ) : KeyedCoProcessFunction<String, PredictionRequestEvent, GroundTruthEvent, MoaEvaluationResult>() {
-    // Buffer State: Holds Event A until Event B arrives
+    @Transient
+    private lateinit var logger: Logger
+
+    // Buffer States: Handle Kafka race conditions from independent topics
     private lateinit var predictionBuffer: ValueState<PredictionRequestEvent>
+    private lateinit var gtBuffer: ValueState<GroundTruthEvent>
 
     // Strategy A (POJO State): TargetMean & SGD
     private lateinit var targetMeanState: ValueState<TargetMeanState>
@@ -32,17 +38,24 @@ class MoaEvaluationProcessFunction(
     private var amRulesLiveCache: MutableMap<String, Any> = mutableMapOf()
 
     override fun open(parameters: Configuration) {
+        logger = LoggerFactory.getLogger(MoaEvaluationProcessFunction::class.java)
+
+        // Using TypeInformation.of() prevents InvalidTypesException for Kotlin Data Classes
         predictionBuffer =
             runtimeContext.getState(
-                ValueStateDescriptor("prediction-buffer", Types.POJO(PredictionRequestEvent::class.java)),
+                ValueStateDescriptor("prediction-buffer", TypeInformation.of(PredictionRequestEvent::class.java)),
+            )
+        gtBuffer =
+            runtimeContext.getState(
+                ValueStateDescriptor("gt-buffer", TypeInformation.of(GroundTruthEvent::class.java)),
             )
         targetMeanState =
             runtimeContext.getState(
-                ValueStateDescriptor("target-mean-state", Types.POJO(TargetMeanState::class.java)),
+                ValueStateDescriptor("target-mean-state", TypeInformation.of(TargetMeanState::class.java)),
             )
         sgdState =
             runtimeContext.getState(
-                ValueStateDescriptor("sgd-state", Types.POJO(SgdState::class.java)),
+                ValueStateDescriptor("sgd-state", TypeInformation.of(SgdState::class.java)),
             )
         amRulesByteState =
             runtimeContext.getState(
@@ -56,7 +69,21 @@ class MoaEvaluationProcessFunction(
         ctx: Context,
         out: Collector<MoaEvaluationResult>,
     ) {
+        logger.info(">>> [PRED] Arrived: ${event.identifiers.slabId}-P${event.identifiers.passNumber}")
         predictionBuffer.update(event)
+
+        // Race Condition Check: Did the Ground Truth arrive before this prediction?
+        val earlyGt = gtBuffer.value()
+        if (earlyGt != null) {
+            logger.info(
+                ">>> [RECOVERED MATCH] Delayed Prediction caught up with buffered GT for: ${event.identifiers.slabId}-P${event.identifiers.passNumber}",
+            )
+            evaluateAndEmit(event, earlyGt, out)
+
+            // Clear both buffers to prevent memory leaks
+            predictionBuffer.clear()
+            gtBuffer.clear()
+        }
     }
 
     override fun processElement2(
@@ -64,8 +91,28 @@ class MoaEvaluationProcessFunction(
         ctx: Context,
         out: Collector<MoaEvaluationResult>,
     ) {
-        val request = predictionBuffer.value() ?: return
+        val request = predictionBuffer.value()
 
+        if (request == null) {
+            // Race Condition Check: Prediction hasn't arrived yet. Buffer this GT.
+            logger.warn("!!! [RACE CONDITION] GT arrived first for: ${gt.identifiers.slabId}-P${gt.identifiers.passNumber}. Buffering...")
+            gtBuffer.update(gt)
+            return
+        }
+
+        logger.info(">>> [MATCH] Joining PRED and GT for: ${gt.identifiers.slabId}-P${gt.identifiers.passNumber}")
+        evaluateAndEmit(request, gt, out)
+
+        // Clear both buffers to prevent memory leaks
+        predictionBuffer.clear()
+        gtBuffer.clear()
+    }
+
+    private fun evaluateAndEmit(
+        request: PredictionRequestEvent,
+        gt: GroundTruthEvent,
+        out: Collector<MoaEvaluationResult>,
+    ) {
         val actualForce = gt.groundTruth.actualRollForceKn
         val baselineForce = request.baselinePrediction.baselineRollForceKn
 
@@ -127,7 +174,6 @@ class MoaEvaluationProcessFunction(
                 wearLevel = gt.groundTruth.wearLevel,
             ),
         )
-        predictionBuffer.clear()
     }
 
     private fun calculateApe(
@@ -138,8 +184,11 @@ class MoaEvaluationProcessFunction(
         return abs((actual - predicted) / actual) * 100.0
     }
 
+    // Safely parses "2026-04-09T20:37:28.059" into Epoch Milliseconds based on the system timezone
     private fun String.toEpochMilli(): Long =
-        java.time.Instant
+        java.time.LocalDateTime
             .parse(this)
+            .atZone(java.time.ZoneId.systemDefault())
+            .toInstant()
             .toEpochMilli()
 }
