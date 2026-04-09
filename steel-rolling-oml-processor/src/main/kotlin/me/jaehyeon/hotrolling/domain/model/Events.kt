@@ -5,19 +5,19 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import java.io.Serializable
 
 // ==========================================
-// Event A: Prediction Request (From Simulator)
+// Prediction Request Event
 // ==========================================
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class PredictionRequestEvent(
     val timestamp: String,
-    val identifiers: Identifiers,
+    val identifiers: PredictionIdentifiers,
     val features: Map<String, Double>,
     @JsonProperty("baseline_prediction")
     val baselinePrediction: BaselinePrediction,
 ) : Serializable
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class Identifiers(
+data class PredictionIdentifiers(
     @JsonProperty("slab_id") val slabId: String,
     @JsonProperty("pass_number") val passNumber: Int,
     @JsonProperty("steel_grade") val steelGrade: String,
@@ -30,7 +30,7 @@ data class BaselinePrediction(
 ) : Serializable
 
 // ==========================================
-// Event B: Ground Truth (From Simulator)
+// Ground Truth Event
 // ==========================================
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class GroundTruthEvent(
