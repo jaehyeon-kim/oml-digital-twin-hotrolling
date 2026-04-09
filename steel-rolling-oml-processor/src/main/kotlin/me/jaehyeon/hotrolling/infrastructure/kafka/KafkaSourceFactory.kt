@@ -1,20 +1,18 @@
 package me.jaehyeon.hotrolling.infrastructure.kafka
 
 import com.fasterxml.jackson.databind.DeserializationFeature
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.PropertyNamingStrategies
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import me.jaehyeon.hotrolling.config.AppConfig
 import org.apache.flink.api.common.eventtime.WatermarkStrategy
+import org.apache.flink.api.common.serialization.DeserializationSchema
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.connector.kafka.source.KafkaSource
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer
-import org.apache.flink.connector.kafka.source.reader.deserializer.KafkaRecordDeserializationSchema
-import org.apache.flink.streaming.api.datastream.DataStream
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
-import org.apache.flink.util.Collector
-import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.slf4j.LoggerFactory
-import java.time.Duration
 
 class KafkaSourceFactory(
     private val env: StreamExecutionEnvironment,
@@ -22,15 +20,13 @@ class KafkaSourceFactory(
 ) {
     private val logger = LoggerFactory.getLogger(KafkaSourceFactory::class.java)
 
-    /**
-     * Generic factory method to create a JSON-based Flink Kafka stream.
-     */
+    // Remove the ObjectMapper from the factory level, we will create it inside the Schema
+
     fun <T> createStream(
         topic: String,
-        targetType: Class<T>,
-        startingOffsets: OffsetsInitializer = OffsetsInitializer.earliest(),
-    ): DataStream<T> {
-        logger.info("Initializing Pure JSON Kafka Source for topic: '{}'", topic)
+        typeClass: Class<T>,
+    ): org.apache.flink.streaming.api.datastream.DataStreamSource<T> {
+        logger.info("Initializing Pure JSON Kafka Source for topic: '$topic'")
 
         val source =
             KafkaSource
@@ -38,60 +34,56 @@ class KafkaSourceFactory(
                 .setBootstrapServers(config.bootstrapAddress)
                 .setTopics(topic)
                 .setGroupId(config.kafkaGroupId)
-                .setStartingOffsets(startingOffsets)
-                .setProperty("commit.offsets.on.checkpoint", "true")
-                .setDeserializer(JsonDeserializationSchema(targetType))
+                .setStartingOffsets(OffsetsInitializer.earliest())
+                // Pass ONLY the class type, not the mapper
+                .setValueOnlyDeserializer(JsonDeserializationSchema(typeClass))
                 .build()
 
-        // Watermark Strategy: Allow up to 5 seconds of out-of-orderness for network delays
-        val wmStrategy =
-            WatermarkStrategy
-                .forBoundedOutOfOrderness<T>(Duration.ofSeconds(5))
-                .withIdleness(Duration.ofSeconds(60))
-
-        return env
-            .fromSource(source, wmStrategy, "Kafka-Source-$topic")
-            .name("Read-$topic")
+        return env.fromSource(source, WatermarkStrategy.noWatermarks(), topic)
     }
 
-    /**
-     * Custom Deserializer that maps pure JSON Bytes into Kotlin Data Classes using Jackson.
-     */
-    private class JsonDeserializationSchema<T>(
-        private val targetType: Class<T>,
-    ) : KafkaRecordDeserializationSchema<T> {
-        // Marked transient so Flink ignores it during cluster serialization
+    class JsonDeserializationSchema<T>(
+        private val typeClass: Class<T>,
+    ) : DeserializationSchema<T> {
         @Transient
-        private var mapper: com.fasterxml.jackson.databind.ObjectMapper? = null
+        private var log = LoggerFactory.getLogger(JsonDeserializationSchema::class.java)
 
-        // Flink's native lifecycle method. Called exactly once per worker node.
-        override fun open(context: org.apache.flink.api.common.serialization.DeserializationSchema.InitializationContext) {
-            mapper =
-                jacksonObjectMapper().apply {
-                    registerModule(JavaTimeModule())
-                    configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-                }
+        // 1. Mark as @Transient so Flink doesn't try to serialize it
+        @Transient
+        private var mapper: ObjectMapper? = null
+
+        // 2. Lazy Initialization: Create the mapper only when a worker needs it
+        private fun getMapper(): ObjectMapper {
+            if (mapper == null) {
+                mapper =
+                    jacksonObjectMapper()
+                        .registerModule(JavaTimeModule())
+                        .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+                        .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            }
+            return mapper!!
         }
 
-        override fun deserialize(
-            record: ConsumerRecord<ByteArray, ByteArray>,
-            collector: Collector<T>,
-        ) {
-            if (record.value() == null) return
+        // Re-initialize logger if it was dropped during serialization
+        private fun getLogger() = log ?: LoggerFactory.getLogger(JsonDeserializationSchema::class.java).also { log = it }
 
+        override fun deserialize(message: ByteArray): T? {
             try {
-                // Use the safely initialized mapper
-                val obj = mapper!!.readValue(record.value(), targetType)
-                collector.collect(obj)
+                // Use the lazy getter
+                val currentMapper = getMapper()
+
+                val root = currentMapper.readTree(message)
+                val dataNode = if (root.has("value")) root.get("value") else root
+
+                return currentMapper.treeToValue(dataNode, typeClass)
             } catch (e: Exception) {
-                // Highly resilient: Log and drop malformed JSON to prevent the whole pipeline from crashing
-                val rawString = String(record.value())
-                LoggerFactory
-                    .getLogger(JsonDeserializationSchema::class.java)
-                    .error("Failed to deserialize JSON. Dropping message: $rawString", e)
+                getLogger().error("Failed to deserialize JSON. Raw message: ${String(message)}", e)
+                return null
             }
         }
 
-        override fun getProducedType(): TypeInformation<T> = TypeInformation.of(targetType)
+        override fun isEndOfStream(nextElement: T): Boolean = false
+
+        override fun getProducedType(): TypeInformation<T> = TypeInformation.of(typeClass)
     }
 }
