@@ -23,30 +23,32 @@ val moaVersion = "2024.07.0"
 // ==========================================
 configurations.all {
     resolutionStrategy {
-        // Force patch Jackson (Fixes GHSA-72hv-8253-57qq / WS-2026-0003)
+        // Resolve the LZ4 Identity Crisis (Capability Conflict)
+        dependencySubstitution {
+            substitute(module("org.lz4:lz4-java"))
+                .using(module("at.yawk.lz4:lz4-java:1.8.1"))
+                .because("org.lz4 is discontinued and relocated to at.yawk.lz4")
+        }
+
+        // Force patch Jackson
         force("com.fasterxml.jackson.core:jackson-core:2.21.1")
         force("com.fasterxml.jackson.core:jackson-databind:2.21.1")
         force("com.fasterxml.jackson.core:jackson-annotations:2.21")
 
-        // Force patch Log4j (Fixes CVE-2025-68161)
+        // Force patch Log4j
         force("org.apache.logging.log4j:log4j-api:2.25.4")
         force("org.apache.logging.log4j:log4j-core:2.25.4")
         force("org.apache.logging.log4j:log4j-slf4j-impl:2.25.4")
 
-        // Force patch Commons Lang (Fixes CVE-2025-48924)
+        // Force patch Commons Lang & Plexus
         force("org.apache.commons:commons-lang3:3.18.0")
-
-        // Force patch Plexus Utils (Fixes CVE-2025-67030)
         force("org.codehaus.plexus:plexus-utils:4.0.3")
 
-        // Force patch LZ4 (Fixes CVE-2025-66566)
-        force("org.lz4:lz4-java:1.8.1")
-
-        // Force patch Kafka Clients (Fixes CVE-2026-35554)
+        // Force patch Kafka Clients
         force("org.apache.kafka:kafka-clients:3.9.2")
     }
 
-    // Aggressively exclude vulnerable transitive libraries we don't actually use
+    // Exclude vulnerable or redundant transitive libraries
     exclude(group = "commons-beanutils", module = "commons-beanutils")
     exclude(group = "ai.djl", module = "api")
 
@@ -77,7 +79,10 @@ dependencies {
     implementation("org.apache.kafka:kafka-clients:3.9.2")
     implementation("org.apache.flink:flink-connector-kafka:3.4.0-1.20")
 
-    // JSON Serialization (Synchronized with forced secure versions)
+    // LZ4 - Use the NEW group ID directly to avoid confusion
+    implementation("at.yawk.lz4:lz4-java:1.8.1")
+
+    // JSON Serialization
     implementation("com.fasterxml.jackson.core:jackson-annotations:2.21")
     implementation("com.fasterxml.jackson.core:jackson-databind:2.21.1")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.21.1")
@@ -89,7 +94,7 @@ dependencies {
     // ClickHouse Sink
     implementation("com.clickhouse.flink:flink-connector-clickhouse-1.17:0.1.3:all")
 
-    // Logging (Synchronized with forced secure versions)
+    // Logging
     runtimeOnly("org.apache.logging.log4j:log4j-api:2.25.4")
     runtimeOnly("org.apache.logging.log4j:log4j-core:2.25.4")
     runtimeOnly("org.apache.logging.log4j:log4j-slf4j-impl:2.25.4")
