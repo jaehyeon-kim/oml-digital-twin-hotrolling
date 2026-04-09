@@ -1,1 +1,2 @@
 dynamic-des[kafka,dashboard]
+clickhouse-connect
