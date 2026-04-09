@@ -85,7 +85,7 @@ def telemetry_monitor(env: DynamicRealtimeEnvironment, product_lines: list[str])
 # ==========================================
 # Main Execution
 # ==========================================
-def run(seed: int, factor: float):
+def run(seed: int, factor: float, variable_passes: bool, max_passes: int):
     TOPICS_CONFIG = [
         {"name": TOPIC_CONTROL_INGRESS, "partitions": 1},
         {"name": TOPIC_TELEMETRY, "partitions": 1},
@@ -123,8 +123,14 @@ def run(seed: int, factor: float):
         mill_res = DynamicResource(env, "HotRolling", f"mill_{prod}")
         primer_hash = uuid.uuid4().hex[:8].upper()
 
-        env.process(roll_slab(env, primer_hash, prod, sampler, mill_res))
-        env.process(arrival_process(env, prod, sampler, mill_res))
+        env.process(
+            roll_slab(
+                env, primer_hash, prod, variable_passes, max_passes, sampler, mill_res
+            )
+        )
+        env.process(
+            arrival_process(env, prod, variable_passes, max_passes, sampler, mill_res)
+        )
 
     logger.info(f"Kafka Hot Rolling Digital Twin Started! (Factor: {factor}x)")
     logger.info(" - Waiting for control signals on topic: sim-controls")
@@ -144,16 +150,38 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--seed",
+        "-s",
         type=int,
         default=42,
         help="Random seed for the numpy sampler (default: 42)",
     )
     parser.add_argument(
         "--factor",
+        "-f",
         type=float,
         default=1.0,
         help="Simulation real-time speed factor (default: 1.0)",
     )
 
+    parser.add_argument(
+        "--variable-passes",
+        "-v",
+        action="store_true",
+        help="Enable variable number of passes. If omitted, uses fixed max-passes.",
+    )
+
+    parser.add_argument(
+        "--max-passes",
+        "-p",
+        type=int,
+        default=5,
+        help="The number of passes if fixed, or the upper limit if variable (default: 5)",
+    )
+
     args = parser.parse_args()
-    run(seed=args.seed, factor=args.factor)
+    run(
+        seed=args.seed,
+        factor=args.factor,
+        variable_passes=args.variable_passes,
+        max_passes=args.max_passes,
+    )

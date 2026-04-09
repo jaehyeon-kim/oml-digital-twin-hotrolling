@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 # ==========================================
 # Event A: Prediction Request Components
 # ==========================================
-class Identifiers(BaseModel):
+class PredictionIdentifiers(BaseModel):
     """
     Metadata used for tracking, routing, and joining streams.
     """
@@ -105,7 +105,7 @@ class PredictionRequestEvent(BaseModel):
     timestamp: str = Field(
         ..., description="ISO 8601 timestamp of when the slab entered the pass."
     )
-    identifiers: Identifiers
+    identifiers: PredictionIdentifiers
     features: Features
     baseline_prediction: BaselinePrediction
 

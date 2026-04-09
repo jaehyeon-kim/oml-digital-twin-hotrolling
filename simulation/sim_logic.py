@@ -8,7 +8,7 @@ from src.schemas import (
     GroundTruthEvent,
     GroundTruthIdentifiers,
     GroundTruthMetrics,
-    Identifiers,
+    PredictionIdentifiers,
     PredictionRequestEvent,
 )
 from src.slab import SlabState
@@ -34,6 +34,8 @@ def drift_engine(env: DynamicRealtimeEnvironment, product_lines: list[str]):
 def arrival_process(
     env: DynamicRealtimeEnvironment,
     product_type: str,
+    variable_passes: bool,
+    max_passes: int,
     sampler: Sampler,
     mill_res: DynamicResource,
 ):
@@ -42,18 +44,33 @@ def arrival_process(
         yield env.timeout(sampler.sample(arrival_cfg))
         # Generate inline hash
         new_hash = uuid.uuid4().hex[:8].upper()
-        env.process(roll_slab(env, new_hash, product_type, sampler, mill_res))
+        env.process(
+            roll_slab(
+                env,
+                new_hash,
+                product_type,
+                variable_passes,
+                max_passes,
+                sampler,
+                mill_res,
+            )
+        )
 
 
 def roll_slab(
     env: DynamicRealtimeEnvironment,
     task_key: str,
     product_type: str,
+    variable_passes: bool,
+    max_passes: int,
     sampler: Sampler,
     mill_res: DynamicResource,
 ):
     slab_id = f"SLAB-{product_type.upper()}-{task_key}"
-    total_passes = int(sampler.rng.integers(3, 6))
+    if variable_passes:
+        total_passes = int(sampler.rng.integers(3, max_passes + 1))
+    else:
+        total_passes = max_passes
     slab = SlabState(sampler.rng, total_passes)
 
     for pass_num in range(1, total_passes + 1):
@@ -66,7 +83,7 @@ def roll_slab(
         else:
             pass_path = "HotRolling.service.pass_finishing"
 
-        # 1. Queued
+        # Queued
         env.publish_event(task_key_pass, {"path_id": pass_path, "status": "queued"})
         logger.info(
             f"key: {task_key_pass}, path: {pass_path.split('.')[-1]}, status: queued, timestamp: {env.now:.3f}"
@@ -75,7 +92,7 @@ def roll_slab(
         with mill_res.request() as req:
             yield req
 
-            # 2. Started
+            # Started
             env.publish_event(
                 task_key_pass, {"path_id": pass_path, "status": "started"}
             )
@@ -88,7 +105,7 @@ def roll_slab(
 
             pred_event = PredictionRequestEvent(
                 timestamp=env._get_iso_timestamp(env.start_datetime, env.now),
-                identifiers=Identifiers(
+                identifiers=PredictionIdentifiers(
                     slab_id=slab_id,
                     pass_number=pass_num,
                     steel_grade=product_type,
@@ -131,7 +148,7 @@ def roll_slab(
             )
             env.publish_event(f"GT-{task_key_pass}", gt_event.model_dump(mode="json"))
 
-            # 3. Finished
+            # Finished
             env.publish_event(
                 task_key_pass, {"path_id": pass_path, "status": "finished"}
             )
