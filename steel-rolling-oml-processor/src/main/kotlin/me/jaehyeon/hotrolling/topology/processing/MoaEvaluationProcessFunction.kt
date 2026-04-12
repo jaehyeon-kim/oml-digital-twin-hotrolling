@@ -1,15 +1,11 @@
 package me.jaehyeon.hotrolling.topology.processing
 
-import me.jaehyeon.hotrolling.domain.model.GroundTruthEvent
-import me.jaehyeon.hotrolling.domain.model.MoaEvaluationResult
-import me.jaehyeon.hotrolling.domain.model.PredictionRequestEvent
-import me.jaehyeon.hotrolling.domain.model.SgdState
-import me.jaehyeon.hotrolling.domain.model.TargetMeanState
+import me.jaehyeon.hotrolling.domain.model.*
 import org.apache.flink.api.common.state.ValueState
 import org.apache.flink.api.common.state.ValueStateDescriptor
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.configuration.Configuration
-import org.apache.flink.streaming.api.functions.co.KeyedCoProcessFunction
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction
 import org.apache.flink.util.Collector
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
@@ -19,36 +15,20 @@ class MoaEvaluationProcessFunction(
     private val ewmaLambda: Double,
     private val sgdLearningRate: Double,
     private val sgdDecay: Double,
-) : KeyedCoProcessFunction<String, PredictionRequestEvent, GroundTruthEvent, MoaEvaluationResult>() {
+) : KeyedProcessFunction<String, MatchedEvent, MoaEvaluationResult>() {
     @Transient
     private lateinit var logger: Logger
 
-    // Buffer States: Handle Kafka race conditions from independent topics
-    private lateinit var predictionBuffer: ValueState<PredictionRequestEvent>
-    private lateinit var gtBuffer: ValueState<GroundTruthEvent>
-
-    // Strategy A (POJO State): TargetMean & SGD
+    // ONLY ML STATES NOW
     private lateinit var targetMeanState: ValueState<TargetMeanState>
     private lateinit var sgdState: ValueState<SgdState>
 
-    // Strategy B (Byte State): AMRules
-    private lateinit var amRulesByteState: ValueState<ByteArray>
-
-    @Transient
-    private var amRulesLiveCache: MutableMap<String, Any> = mutableMapOf()
+    // Helper Component
+    private lateinit var scaler: WelfordScaler
 
     override fun open(parameters: Configuration) {
         logger = LoggerFactory.getLogger(MoaEvaluationProcessFunction::class.java)
 
-        // Using TypeInformation.of() prevents InvalidTypesException for Kotlin Data Classes
-        predictionBuffer =
-            runtimeContext.getState(
-                ValueStateDescriptor("prediction-buffer", TypeInformation.of(PredictionRequestEvent::class.java)),
-            )
-        gtBuffer =
-            runtimeContext.getState(
-                ValueStateDescriptor("gt-buffer", TypeInformation.of(GroundTruthEvent::class.java)),
-            )
         targetMeanState =
             runtimeContext.getState(
                 ValueStateDescriptor("target-mean-state", TypeInformation.of(TargetMeanState::class.java)),
@@ -57,88 +37,76 @@ class MoaEvaluationProcessFunction(
             runtimeContext.getState(
                 ValueStateDescriptor("sgd-state", TypeInformation.of(SgdState::class.java)),
             )
-        amRulesByteState =
-            runtimeContext.getState(
-                ValueStateDescriptor("amrules-byte-state", ByteArray::class.java),
-            )
-        amRulesLiveCache = mutableMapOf()
+
+        // Initialize the feature scaling component
+        scaler = WelfordScaler(16)
+        scaler.open(runtimeContext)
     }
 
-    override fun processElement1(
-        event: PredictionRequestEvent,
+    override fun processElement(
+        event: MatchedEvent,
         ctx: Context,
         out: Collector<MoaEvaluationResult>,
     ) {
-        logger.info(">>> [PRED] Arrived: ${event.identifiers.slabId}-P${event.identifiers.passNumber}")
-        predictionBuffer.update(event)
+        val request = event.prediction
+        val gt = event.groundTruth
 
-        // Race Condition Check: Did the Ground Truth arrive before this prediction?
-        val earlyGt = gtBuffer.value()
-        if (earlyGt != null) {
-            logger.info(
-                ">>> [RECOVERED MATCH] Delayed Prediction caught up with buffered GT for: ${event.identifiers.slabId}-P${event.identifiers.passNumber}",
-            )
-            evaluateAndEmit(event, earlyGt, out)
-
-            // Clear both buffers to prevent memory leaks
-            predictionBuffer.clear()
-            gtBuffer.clear()
-        }
-    }
-
-    override fun processElement2(
-        gt: GroundTruthEvent,
-        ctx: Context,
-        out: Collector<MoaEvaluationResult>,
-    ) {
-        val request = predictionBuffer.value()
-
-        if (request == null) {
-            // Race Condition Check: Prediction hasn't arrived yet. Buffer this GT.
-            logger.warn("!!! [RACE CONDITION] GT arrived first for: ${gt.identifiers.slabId}-P${gt.identifiers.passNumber}. Buffering...")
-            gtBuffer.update(gt)
-            return
-        }
-
-        logger.info(">>> [MATCH] Joining PRED and GT for: ${gt.identifiers.slabId}-P${gt.identifiers.passNumber}")
-        evaluateAndEmit(request, gt, out)
-
-        // Clear both buffers to prevent memory leaks
-        predictionBuffer.clear()
-        gtBuffer.clear()
-    }
-
-    private fun evaluateAndEmit(
-        request: PredictionRequestEvent,
-        gt: GroundTruthEvent,
-        out: Collector<MoaEvaluationResult>,
-    ) {
         val actualForce = gt.groundTruth.actualRollForceKn
         val baselineForce = request.baselinePrediction.baselineRollForceKn
 
-        // --- TARGET MEAN (EWMA) ---
+        // ---------------------------------------------------------
+        // TARGET MEAN (HYBRID EWMA)
+        // Track the moving average of the ERROR (bias), not the absolute force!
+        // ---------------------------------------------------------
         val meanState = targetMeanState.value() ?: TargetMeanState()
-        val targetMeanForce = if (meanState.initialized) meanState.currentMean else baselineForce
+        val currentEwmaError = if (meanState.initialized) meanState.currentMean else 0.0
 
-        meanState.currentMean = (ewmaLambda * actualForce) + ((1 - ewmaLambda) * targetMeanForce)
+        // 1. Predict: Physical Baseline + The historical average error (bias)
+        val targetMeanForce = baselineForce + currentEwmaError
+
+        // 2. Calculate the true physical error for this specific pass
+        val actualError = actualForce - baselineForce
+
+        // 3. Update the EWMA with the new error
+        meanState.currentMean = (ewmaLambda * actualError) + ((1 - ewmaLambda) * currentEwmaError)
         meanState.initialized = true
         targetMeanState.update(meanState)
 
-        // --- STOCHASTIC GRADIENT DESCENT (SGD) ---
+        // ---------------------------------------------------------
+        // ML STRATEGY 2: FEATURE NORMALIZATION
+        // Bounds features to [0.0, 1.0] to prevent exploding gradients.
+        // ---------------------------------------------------------
+        val features = scaler.scale(request.features)
+
+        // ---------------------------------------------------------
+        // STOCHASTIC GRADIENT DESCENT (SGD)
+        // ---------------------------------------------------------
         val sgd = sgdState.value() ?: SgdState()
-        val features = request.features.values.toDoubleArray()
 
         if (!sgd.initialized) {
             sgd.weights = DoubleArray(features.size) { 0.0 }
+            sgd.bias = 0.0
             sgd.initialized = true
         }
 
-        var sgdForce = sgd.bias
+        // ---------------------------------------------------------
+        // ML STRATEGY 3: HYBRID RESIDUAL LEARNING (Physics-Informed ML)
+        // Instead of forcing the ML model to learn the massive 4.7M kN force
+        // from scratch (which causes extreme APE fluctuations and cold-starts),
+        // we use the theoretical physics model as the baseline.
+        // The SGD model is strictly trained to predict the RESIDUAL ERROR
+        // (the concept drift / roller wear) on top of the baseline.
+        // ---------------------------------------------------------
+        var sgdForce = baselineForce + sgd.bias
+
         for (i in features.indices) {
             sgdForce += sgd.weights[i] * features[i]
         }
 
+        // The error is the difference between actual and our hybrid prediction
         val sgdError = actualForce - sgdForce
+
+        // Train the model ONLY on the residual error
         sgd.bias += sgdLearningRate * sgdError
         for (i in features.indices) {
             val weightDecay = (1.0 - sgdDecay) * sgd.weights[i]
@@ -154,6 +122,13 @@ class MoaEvaluationProcessFunction(
         val targetMeanApe = calculateApe(targetMeanForce, actualForce)
         val sgdApe = calculateApe(sgdForce, actualForce)
         val amRulesApe = calculateApe(amRulesForce, actualForce)
+
+        logger.info(
+            "<<< [EVALUATED] ${request.identifiers.steelGrade} | ${request.identifiers.slabId}-P${request.identifiers.passNumber} | SGD APE: ${String.format(
+                "%.2f",
+                sgdApe,
+            )}%",
+        )
 
         // --- EMIT TO CLICKHOUSE ---
         out.collect(
@@ -184,7 +159,6 @@ class MoaEvaluationProcessFunction(
         return abs((actual - predicted) / actual) * 100.0
     }
 
-    // Safely parses "2026-04-09T20:37:28.059" into Epoch Milliseconds based on the system timezone
     private fun String.toEpochMilli(): Long =
         java.time.LocalDateTime
             .parse(this)

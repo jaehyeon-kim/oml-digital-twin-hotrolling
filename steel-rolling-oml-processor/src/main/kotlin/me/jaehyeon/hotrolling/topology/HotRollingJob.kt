@@ -5,6 +5,7 @@ import me.jaehyeon.hotrolling.domain.model.GroundTruthEvent
 import me.jaehyeon.hotrolling.domain.model.PredictionRequestEvent
 import me.jaehyeon.hotrolling.infrastructure.clickhouse.ClickHouseSinkFactory
 import me.jaehyeon.hotrolling.infrastructure.kafka.KafkaSourceFactory
+import me.jaehyeon.hotrolling.topology.processing.EventMatchProcessFunction
 import me.jaehyeon.hotrolling.topology.processing.MoaEvaluationProcessFunction
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
 
@@ -15,33 +16,30 @@ object HotRollingJob {
     ) {
         val kafkaFactory = KafkaSourceFactory(env, config)
 
-        // Ingest Prediction Events
         val predictionStream =
             kafkaFactory.createStream(
                 config.predictionRequestsTopic,
                 PredictionRequestEvent::class.java,
             )
 
-        // Ingest Ground Truth Events
         val groundTruthStream =
             kafkaFactory.createStream(
                 config.groundTruthTopic,
                 GroundTruthEvent::class.java,
             )
 
-        // Connect Both Streams
-        // We MUST key both streams by the exact same logic so Flink routes
-        // the Prediction and the matching Ground Truth to the exact same memory slot.
-        val connectedStream =
+        // STAGE 1: Match Streams (Isolated by Slab & Pass to handle race conditions)
+        val matchedStream =
             predictionStream
                 .keyBy { "${it.identifiers.slabId}-${it.identifiers.passNumber}" }
-                .connect(
-                    groundTruthStream.keyBy { "${it.identifiers.slabId}-${it.identifiers.passNumber}" },
-                )
+                .connect(groundTruthStream.keyBy { "${it.identifiers.slabId}-${it.identifiers.passNumber}" })
+                .process(EventMatchProcessFunction())
+                .name("Event-Matcher")
 
-        // Apply OML Process Function
+        // STAGE 2: OML Evaluation (Isolated by Steel Grade to prevent Catastrophic Forgetting)
         val evaluationStream =
-            connectedStream
+            matchedStream
+                .keyBy { it.prediction.identifiers.steelGrade }
                 .process(
                     MoaEvaluationProcessFunction(
                         ewmaLambda = config.ewmaLambda,
