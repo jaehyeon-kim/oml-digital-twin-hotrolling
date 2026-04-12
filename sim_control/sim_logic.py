@@ -22,12 +22,58 @@ logger = logging.getLogger("generator.sim_logic")
 def drift_engine(env: DynamicRealtimeEnvironment, product_lines: list[str]):
     while True:
         for prod in product_lines:
-            velocity = env.registry.get(f"HotRolling.variables.velocity_{prod}").value
-            if velocity != 0.0:
-                wear_path = f"HotRolling.containers.wear_{prod}.current_cap"
-                current_wear = env.registry.get(wear_path).value
-                new_wear = max(0.001, min(100.0, current_wear + velocity))
-                env.registry.update(wear_path, new_wear)
+            velocity_var = env.registry.get(
+                f"HotRolling.variables.velocity_{prod}"
+            ).value
+
+            # Check if the velocity is using the new dict schema for gradual drift
+            if isinstance(velocity_var, dict):
+                drift_type = velocity_var.get("type", "abrupt")
+
+                if drift_type == "gradual":
+                    step_value = float(velocity_var.get("value", 0.0))
+                    freq = int(velocity_var.get("freq", 1))
+
+                    # Only apply drift on the specified frequency interval
+                    if (
+                        step_value != 0.0
+                        and int(env.now) > 0
+                        and int(env.now) % freq == 0
+                    ):
+                        wear_path = f"HotRolling.containers.wear_{prod}.current_cap"
+                        current_wear = env.registry.get(wear_path).value
+
+                        new_wear = current_wear + step_value
+
+                        # Bounce Logic: Reverse direction if hitting boundaries
+                        if new_wear >= 100.0:
+                            new_wear = 100.0
+                            velocity_var["value"] = -abs(
+                                step_value
+                            )  # Force downward trajectory
+                            env.registry.update(
+                                f"HotRolling.variables.velocity_{prod}", velocity_var
+                            )
+                        elif new_wear <= 0.001:
+                            new_wear = 0.001
+                            velocity_var["value"] = abs(
+                                step_value
+                            )  # Force upward trajectory
+                            env.registry.update(
+                                f"HotRolling.variables.velocity_{prod}", velocity_var
+                            )
+
+                        env.registry.update(wear_path, new_wear)
+
+            # Fallback for standard float-based abrupt velocity (legacy support)
+            elif isinstance(velocity_var, (int, float)):
+                velocity = float(velocity_var)
+                if velocity != 0.0:
+                    wear_path = f"HotRolling.containers.wear_{prod}.current_cap"
+                    current_wear = env.registry.get(wear_path).value
+                    new_wear = max(0.001, min(100.0, current_wear + velocity))
+                    env.registry.update(wear_path, new_wear)
+
         yield env.timeout(1.0)
 
 
@@ -135,7 +181,9 @@ def roll_slab(
             # of reference_wear * multiplier and 100.0,
             local_wear = min(100.0, reference_wear * sampler.rng.uniform(0.98, 1.02))
 
-            actual_force = calculate_actual_force(baseline, local_wear, sampler.rng)
+            actual_force = calculate_actual_force(
+                baseline, features, local_wear, sampler.rng
+            )
 
             gt_event = GroundTruthEvent(
                 timestamp=env._get_iso_timestamp(env.start_datetime, env.now),
