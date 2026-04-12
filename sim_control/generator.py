@@ -61,10 +61,11 @@ mill_params = SimParameter(
         "wear_microalloyed": CapacityConfig(current_cap=0.001, max_cap=100.0),
         "wear_high_alloy": CapacityConfig(current_cap=0.001, max_cap=100.0),
     },
+    # UPDATED: Replaced simple floats with the dictionary schema
     variables={
-        "velocity_structural": 0.0,
-        "velocity_microalloyed": 0.0,
-        "velocity_high_alloy": 0.0,
+        "velocity_structural": {"type": "abrupt", "value": 0.0},
+        "velocity_microalloyed": {"type": "abrupt", "value": 0.0},
+        "velocity_high_alloy": {"type": "abrupt", "value": 0.0},
     },
 )
 
