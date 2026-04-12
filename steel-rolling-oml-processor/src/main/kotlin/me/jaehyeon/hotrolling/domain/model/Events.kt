@@ -74,3 +74,11 @@ data class MoaEvaluationResult(
     // Telemetry
     val wearLevel: Double,
 ) : Serializable
+
+// ==========================================
+// Internal Flink Pipeline Models
+// ==========================================
+data class MatchedEvent(
+    val prediction: PredictionRequestEvent,
+    val groundTruth: GroundTruthEvent,
+) : Serializable
