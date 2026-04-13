@@ -42,16 +42,13 @@ GRADE_MAPPING = {
 # Control Plane Actions
 # ==========================================
 async def apply_drift_config(grade, drift_type, value, freq):
-    """Sends the correct configuration to the simulation based on the drift type."""
     try:
         if drift_type == "abrupt":
-            # 1. Stop any gradual drift by zeroing out the velocity
             await admin.send_config(
                 TOPIC_CONTROL_INGRESS,
                 f"HotRolling.variables.velocity_{grade}",
                 {"type": "abrupt", "value": 0.0},
             )
-            # 2. Directly set the absolute wear level in the container
             await admin.send_config(
                 TOPIC_CONTROL_INGRESS,
                 f"HotRolling.containers.wear_{grade}.current_cap",
@@ -61,9 +58,7 @@ async def apply_drift_config(grade, drift_type, value, freq):
                 f"Abrupt Update: {GRADE_MAPPING[grade]} wear set to {value:.2f}",
                 type="positive",
             )
-
         elif drift_type == "gradual":
-            # Set the velocity variable using your updated dictionary schema
             payload = {"type": "gradual", "value": float(value), "freq": int(freq)}
             await admin.send_config(
                 TOPIC_CONTROL_INGRESS, f"HotRolling.variables.velocity_{grade}", payload
@@ -71,7 +66,6 @@ async def apply_drift_config(grade, drift_type, value, freq):
             ui.notify(
                 f"Gradual Update: {GRADE_MAPPING[grade]} drift started", type="positive"
             )
-
     except Exception as e:
         logger.error(f"Failed to send Kafka config: {e}")
         ui.notify("Failed to send command to Kafka", type="negative")
@@ -82,22 +76,18 @@ async def apply_drift_config(grade, drift_type, value, freq):
 # ==========================================
 @ui.page("/")
 def index():
-    # Subtle background color for the whole page
     ui.query("body").style("background-color: #f8fafc")
     ui.colors(primary="#1E3A8A", secondary="#10B981", accent="#F59E0B")
 
-    # Header spanning full width
     with ui.header().classes(
         "items-center justify-center bg-primary text-white p-4 shadow-md"
     ):
-        with ui.row().classes("w-full max-w-5xl justify-between items-center"):
-            ui.label("Hot Rolling Digital Twin - Multi-Grade Monitor").classes(
+        with ui.row().classes("w-full max-w-6xl justify-between items-center"):
+            ui.label("Hot Rolling Digital Twin - Concept Drift Monitor").classes(
                 "text-2xl font-bold"
             )
 
-    # Main Content Wrapper - Centered and narrowed!
-    with ui.column().classes("w-full max-w-5xl mx-auto mt-4 gap-4"):
-        # Top-Level Tabs
+    with ui.column().classes("w-full max-w-6xl mx-auto mt-4 gap-4"):
         with ui.tabs().classes(
             "w-full bg-slate-200 text-slate-700 font-bold rounded-t-lg"
         ) as tabs:
@@ -105,6 +95,35 @@ def index():
 
         charts = {}
         wear_labels = {}
+        series_selections = {}
+
+        # Standard definition for dynamic chart lines
+        series_definitions = {
+            "Baseline": {
+                "name": "Baseline Error",
+                "type": "line",
+                "itemStyle": {"color": "#EF4444"},
+                "animation": False,
+            },
+            "Target Mean": {
+                "name": "Target Mean Error",
+                "type": "line",
+                "itemStyle": {"color": "#F59E0B"},
+                "animation": False,
+            },
+            "SGD": {
+                "name": "SGD Error",
+                "type": "line",
+                "itemStyle": {"color": "#10B981"},
+                "animation": False,
+            },
+            "AMRules": {
+                "name": "AMRules Error",
+                "type": "line",
+                "itemStyle": {"color": "#8B5CF6"},
+                "animation": False,
+            },
+        }
 
         with ui.tab_panels(tabs, value=tab_refs["structural"]).classes(
             "w-full bg-transparent p-0"
@@ -115,7 +134,6 @@ def index():
                     with ui.row().classes(
                         "w-full items-end p-4 bg-white rounded-lg shadow-sm border border-slate-200 gap-6"
                     ):
-                        # Type Selector
                         with ui.column().classes("gap-1"):
                             ui.label("Drift Type:").classes(
                                 "font-semibold text-slate-700 text-sm"
@@ -123,27 +141,23 @@ def index():
                             mode_select = ui.select(
                                 {
                                     "abrupt": "Abrupt (Instant)",
-                                    "gradual": "Gradual (Oscillating)",
+                                    "gradual": "Gradual (Auto)",
                                 },
                                 value="abrupt",
-                            ).classes("w-48")
+                            ).classes("w-40")
 
-                        # Value/Step Input (Changes context based on type)
                         with ui.column().classes("gap-1"):
                             ui.label().bind_text_from(
                                 mode_select,
                                 "value",
                                 backward=lambda v: (
-                                    "Target Wear (0-100):"
-                                    if v == "abrupt"
-                                    else "Step Amount:"
+                                    "Wear (0-100):" if v == "abrupt" else "Step Amount:"
                                 ),
                             ).classes("font-semibold text-slate-700 text-sm")
                             val_input = ui.number(
                                 value=0.0, format="%.2f", step=0.5
-                            ).classes("w-32")
+                            ).classes("w-28")
 
-                        # Frequency Input (Only shows if gradual)
                         with (
                             ui.column()
                             .classes("gap-1")
@@ -151,21 +165,33 @@ def index():
                                 mode_select, "value", lambda v: v == "gradual"
                             )
                         ):
-                            ui.label("Frequency (sec):").classes(
+                            ui.label("Freq (sec):").classes(
                                 "font-semibold text-slate-700 text-sm"
                             )
                             freq_input = ui.number(
                                 value=5, format="%d", step=1
-                            ).classes("w-24")
+                            ).classes("w-20")
 
-                        # Apply Button
                         with ui.column().classes("gap-1 pb-1"):
                             ui.button(
-                                "Apply Config",
+                                "Apply",
                                 on_click=lambda g=grade, m=mode_select, v=val_input, f=freq_input: (
                                     apply_drift_config(g, m.value, v.value, f.value)
                                 ),
-                            ).props("color=accent")
+                            ).props("color=primary outline")
+
+                        # Multi-Select for Chart Lines
+                        with ui.column().classes(
+                            "gap-1 border-l-2 border-slate-200 pl-6"
+                        ):
+                            ui.label("Metrics to Plot:").classes(
+                                "font-semibold text-slate-700 text-sm"
+                            )
+                            series_selections[grade] = ui.select(
+                                options=["Baseline", "Target Mean", "SGD", "AMRules"],
+                                value=["Baseline", "Target Mean", "SGD"],
+                                multiple=True,
+                            ).classes("w-64")
 
                         ui.space()
 
@@ -183,16 +209,9 @@ def index():
                     # --- CHART ---
                     charts[grade] = ui.echart(
                         {
-                            "animation": False,  # <--- DISABLES THE SLIDING ANIMATION
+                            "animation": False,
                             "tooltip": {"trigger": "axis"},
-                            "legend": {
-                                "data": [
-                                    "Baseline Error",
-                                    "Target Mean Error",
-                                    "SGD Error",
-                                ],
-                                "bottom": 0,
-                            },
+                            "legend": {"data": [], "bottom": 0},
                             "grid": {
                                 "left": "5%",
                                 "right": "5%",
@@ -209,28 +228,8 @@ def index():
                                 "type": "value",
                                 "name": "APE (%)",
                                 "scale": True,
-                                "splitNumber": 5,
                             },
-                            "series": [
-                                {
-                                    "name": "Baseline Error",
-                                    "type": "line",
-                                    "itemStyle": {"color": "#EF4444"},
-                                    "data": [],
-                                },
-                                {
-                                    "name": "Target Mean Error",
-                                    "type": "line",
-                                    "itemStyle": {"color": "#F59E0B"},
-                                    "data": [],
-                                },
-                                {
-                                    "name": "SGD Error",
-                                    "type": "line",
-                                    "itemStyle": {"color": "#10B981"},
-                                    "data": [],
-                                },
-                            ],
+                            "series": [],
                         }
                     ).classes(
                         "w-full h-[500px] bg-white border border-slate-200 rounded-lg shadow-sm p-4"
@@ -243,29 +242,45 @@ def index():
         if not ch_client:
             return
 
-        # Query all grades so charts remain populated even when tabs are hidden
         for grade in GRADE_MAPPING:
+            # Added am_rules_ape to the SQL query
             query = f"""
-                SELECT formatDateTime(evaluation_timestamp, '%H:%M:%S'), baseline_ape, target_mean_ape, sgd_ape, wear_level
-                FROM dev.oml_evaluation_metrics WHERE steel_grade = '{grade}' ORDER BY evaluation_timestamp DESC LIMIT 60
+                SELECT formatDateTime(evaluation_timestamp, '%H:%M:%S'), 
+                       baseline_ape, target_mean_ape, sgd_ape, am_rules_ape, wear_level
+                FROM dev.oml_evaluation_metrics 
+                WHERE steel_grade = '{grade}' 
+                ORDER BY evaluation_timestamp DESC 
+                LIMIT 60
             """
             try:
                 result = await run.io_bound(ch_client.query, query)
                 rows = list(reversed(result.result_rows))
 
                 if rows:
-                    charts[grade].options["xAxis"]["data"] = [r[0] for r in rows]
-                    charts[grade].options["series"][0]["data"] = [
-                        round(r[1], 2) for r in rows
-                    ]
-                    charts[grade].options["series"][1]["data"] = [
-                        round(r[2], 2) for r in rows
-                    ]
-                    charts[grade].options["series"][2]["data"] = [
-                        round(r[3], 2) for r in rows
-                    ]
+                    active_keys = series_selections[grade].value
+                    series_data = []
+                    legend_data = []
 
-                    wear_labels[grade].set_text(f"{rows[-1][4]:.2f}")
+                    # Dynamically build the chart array based on dropdown selection
+                    for key in active_keys:
+                        series_template = series_definitions[key].copy()
+                        if key == "Baseline":
+                            series_template["data"] = [round(r[1], 2) for r in rows]
+                        elif key == "Target Mean":
+                            series_template["data"] = [round(r[2], 2) for r in rows]
+                        elif key == "SGD":
+                            series_template["data"] = [round(r[3], 2) for r in rows]
+                        elif key == "AMRules":
+                            series_template["data"] = [round(r[4], 2) for r in rows]
+
+                        series_data.append(series_template)
+                        legend_data.append(series_template["name"])
+
+                    charts[grade].options["xAxis"]["data"] = [r[0] for r in rows]
+                    charts[grade].options["series"] = series_data
+                    charts[grade].options["legend"]["data"] = legend_data
+
+                    wear_labels[grade].set_text(f"{rows[-1][5]:.2f}")
                     charts[grade].update()
             except Exception as e:
                 logger.error("ClickHouse error on %s: %s", grade, e)
