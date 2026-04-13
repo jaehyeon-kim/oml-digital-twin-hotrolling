@@ -1,10 +1,10 @@
+import numpy as np
 from src.config import (
     MATERIAL_CONSTANTS,
     WEAR_PENALTY_RATE,
     SENSOR_NOISE_STD_DEV,
 )
 from src.schemas import Features
-from numpy.random import Generator
 
 
 def calculate_baseline_force(material_type: str, features: Features):
@@ -13,95 +13,64 @@ def calculate_baseline_force(material_type: str, features: Features):
 
     This function represents the legacy or physics-only prediction. It assumes
     perfect machine conditions and bases its calculation on the volume of steel
-    deformation and material resistance. The formula used is a simplified version
-    of the Sims or Ekelund equations:
+    deformation and material resistance.
 
     Formula:
     Force_base = (Hardness * Width * Draft) / Temperature
 
-    Where:
-    - Hardness is the material-specific constant (C).
-    - Width is the slab width in mm.
-    - Draft is the thickness reduction in mm (entry thickness * reduction percent).
-    - Temperature is the steel temperature in Celsius.
-
     Args:
-        material_type (str): The steel grade identifier used to look up
-            metallurgical constants (e.g., 'structural', 'high_alloy').
-        features (Features): A pydantic model containing real-time machine
-            telemetry for the current pass.
+        material_type (str): The steel grade identifier (e.g., structural, high_alloy).
+        features (Features): The Pydantic model containing raw telemetry for the pass.
 
     Returns:
-        float: The theoretical roll force in kilonewtons (kN), rounded to 2
-            decimal places.
+        float: The theoretical roll force in kN, rounded to 2 decimal places.
     """
-    # Calculate absolute draft (h_in - h_out equivalent)
     draft = features.entry_thickness_mm * features.reduction_pct
-
-    # Ensure temperature is valid for division
     temp = max(features.temperature_c, 1.0)
-
-    # Fetch hardness constant from config
     hardness_c = MATERIAL_CONSTANTS.get(material_type, 18000.0)
 
-    # Core metallurgical calculation
     baseline_force = (hardness_c * features.width_mm * draft) / temp
-
     return round(baseline_force, 2)
 
 
-def calculate_actual_force(
-    baseline_force: float, features: Features, wear_percent: int, rng: Generator
-):
+def calculate_actual_force(baseline_force, features, wear_percent, rng):
     """
-    Simulates ground truth physical sensor readings using Feature-Dependent Concept Drift.
+    Simulates ground truth physical sensor readings using High-Volatility Concept Drift.
 
-    Unlike a simple constant bias, this function models Interaction Effects where
-    the impact of roller wear is amplified or dampened by the slab's physical state.
-    This prevents the baseline error from remaining a consistent percentage and
-    challenges OML models to learn conditional relationships.
+    This version removes artificial 'floors' from the interactions, allowing the
+    Baseline Error to range anywhere from ~2% on early passes to ~75% on final passes.
 
     Logic:
-    1. Base Drift: A non-linear coefficient based on normalized wear level.
-    2. Thermal Sensitivity: Worn rollers exert more disproportionate force on
-       colder, harder steel (interaction with temperature).
-    3. Mechanical Sensitivity: High-reduction passes amplify the efficiency loss
-       of the roller surface (interaction with reduction_pct).
-    4. Stochastic Noise: Gaussian variance representing mechanical/electrical noise.
-
-    Formula:
-    Force_actual = Force_base * (1 + (Base_drift * Thermal_sens * Reduction_sens)) + Noise
-
-    Args:
-        baseline_force (float): The idealized output from calculate_baseline_force.
-        features (Features): The current telemetry used to calculate interaction effects.
-        wear_percent (int): The current state of the wear container (0 to 100).
-        rng (np.random.Generator): Seeded NumPy generator for reproducible noise.
-
-    Returns:
-        float: The simulated true physical force in kN, rounded to 2 decimal places.
+    1. Thermal Factor: Colder steel rapidly increases the penalty.
+    2. Thickness Factor: Thinner steel rapidly increases the penalty.
+    3. Interaction Multiplier: Multiplying these creates a highly non-linear curve
+       that ensures extreme pass-to-pass volatility.
     """
-    # 1. Normalize wear level (0.0 to 1.0)
     wear_level = max(0, min(wear_percent, 100)) / 100.0
 
-    # 2. Base Wear Penalty (Global Coefficient)
-    # Power of 1.5 models the accelerated degradation of roll surfaces
+    # 1. Base Wear Penalty
     base_drift = (wear_level**1.5) * WEAR_PENALTY_RATE
 
-    # 3. Feature Interactions (The Reality Modifier)
-    # Worn rollers struggle more with colder steel (below 1100C)
-    thermal_sensitivity = max(1.0, (1100 - features.temperature_c) / 200)
+    # 2. Thermal Factor (Ideal is ~1250C. Colder steel drives this > 1.0)
+    thermal_factor = max(0.1, (1250.0 - features.temperature_c) / 200.0)
 
-    # Worn rollers lose efficiency more rapidly during heavy squeezing
-    reduction_sensitivity = max(1.0, features.reduction_pct * 4)
+    # 3. Thickness Factor (Ideal is thick > 200mm. Thin steel drives this > 1.0)
+    thickness_factor = 100.0 / max(features.entry_thickness_mm, 10.0)
 
-    # Combine drift factors
-    total_penalty = base_drift * thermal_sensitivity * reduction_sensitivity
+    # 4. Reduction Factor (Heavy reductions scale up the penalty)
+    reduction_factor = 1.0 + features.reduction_pct
 
-    # 4. Generate stochastic sensor noise
+    # Multiply interactions together.
+    # Pass 1 (Hot/Thick) -> Multiplier is ~0.15 (Tiny penalty)
+    # Pass 5 (Cold/Thin) -> Multiplier is ~5.00 (Massive penalty)
+    interaction_multiplier = thermal_factor * thickness_factor * reduction_factor
+
+    total_penalty = base_drift * interaction_multiplier
+
+    # Generate stochastic sensor noise
     sensor_noise = rng.normal(loc=0.0, scale=SENSOR_NOISE_STD_DEV)
 
     # Combine into final Ground Truth
-    actual_force = baseline_force * (1 + total_penalty) + sensor_noise
+    actual_force = baseline_force * (1.0 + total_penalty) + sensor_noise
 
     return round(max(actual_force, 0.0), 2)
