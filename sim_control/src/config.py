@@ -30,11 +30,11 @@ MATERIAL_CONSTANTS = {
 
 # ---------------------------------------------------------
 # DRIFT SCALING:
-# 0.15 means at 100% wear, the machine requires 15% more force
+# 0.40 means at 100% wear, the machine requires 15% more force
 # than the baseline prediction. This scale ensures the APE
 # lines on your dashboard diverge clearly.
 # ---------------------------------------------------------
-WEAR_PENALTY_RATE = 0.15
+WEAR_PENALTY_RATE = 0.40
 
 # Standard deviation for sensor noise (kN)
 SENSOR_NOISE_STD_DEV = 500.0
