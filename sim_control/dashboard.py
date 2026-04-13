@@ -71,17 +71,6 @@ async def apply_drift_config(grade, drift_type, value, freq):
         ui.notify("Failed to send command to Kafka", type="negative")
 
 
-async def handle_apply(g, m, v, f):
-    # Send the command
-    await apply_drift_config(g, m.value, v.value, f.value)
-
-    if m.value == "abrupt":
-        v.value = 0.0
-    else:
-        v.value = 0
-        f.value = 0
-
-
 # ==========================================
 # Dashboard UI
 # ==========================================
@@ -128,10 +117,20 @@ def index():
                 "itemStyle": {"color": "#10B981"},
                 "animation": False,
             },
-            "AMRules": {
-                "name": "AMRules Error",
+            "AMRules (Safe)": {
+                "name": "AMRules (Safe)",
                 "type": "line",
                 "itemStyle": {"color": "#8B5CF6"},
+                "animation": False,
+            },
+            "AMRules (Shadow)": {
+                "name": "AMRules (Shadow)",
+                "type": "line",
+                "itemStyle": {"color": "#C4B5FD"},
+                "lineStyle": {
+                    "type": "dashed",
+                    "width": 2,
+                },
                 "animation": False,
             },
         }
@@ -187,7 +186,7 @@ def index():
                             ui.button(
                                 "Apply",
                                 on_click=lambda g=grade, m=mode_select, v=val_input, f=freq_input: (
-                                    handle_apply(g, m, v, f)
+                                    apply_drift_config(g, m.value, v.value, f.value)
                                 ),
                             ).props("color=primary outline")
 
@@ -199,8 +198,20 @@ def index():
                                 "font-semibold text-slate-700 text-sm"
                             )
                             series_selections[grade] = ui.select(
-                                options=["Baseline", "Target Mean", "SGD", "AMRules"],
-                                value=["Baseline", "Target Mean", "SGD", "AMRules"],
+                                options=[
+                                    "Baseline",
+                                    "Target Mean",
+                                    "SGD",
+                                    "AMRules (Safe)",
+                                    "AMRules (Shadow)",
+                                ],
+                                value=[
+                                    "Baseline",
+                                    "Target Mean",
+                                    "SGD",
+                                    "AMRules (Safe)",
+                                    "AMRules (Shadow)",
+                                ],
                                 multiple=True,
                             ).classes("w-64")
 
@@ -254,11 +265,10 @@ def index():
             return
 
         for grade in GRADE_MAPPING:
-            # Added am_rules_ape to the SQL query
+            # Query updated to fetch shadow_ape at index 5
             query = f"""
-                SELECT formatDateTime(evaluation_timestamp, '%M:%d\n%H:%S'), 
-                       baseline_ape, target_mean_ape, sgd_ape, am_rules_ape,
-                       wear_level, is_am_rules_fallback
+                SELECT formatDateTime(evaluation_timestamp, '%H:%i:%S'), 
+                       baseline_ape, target_mean_ape, sgd_ape, am_rules_ape, am_rules_shadow_ape, wear_level
                 FROM dev.oml_evaluation_metrics 
                 WHERE steel_grade = '{grade}' 
                 ORDER BY evaluation_timestamp DESC 
@@ -273,26 +283,6 @@ def index():
                     series_data = []
                     legend_data = []
 
-                    # 2. Extract the coordinates for the stars
-                    fallback_stars = []
-                    for r in rows:
-                        timestamp = r[0]
-                        am_rules_ape_val = round(r[4], 2)
-                        is_fallback = r[6]
-
-                        # If fallback triggered, create a star markPoint
-                        if is_fallback == 1:
-                            fallback_stars.append(
-                                {
-                                    "coord": [timestamp, am_rules_ape_val],
-                                    "symbol": "star",
-                                    "symbolSize": 16,
-                                    "itemStyle": {
-                                        "color": "#EF4444"
-                                    },  # Bright red star!
-                                }
-                            )
-
                     for key in active_keys:
                         series_template = series_definitions[key].copy()
                         if key == "Baseline":
@@ -301,15 +291,10 @@ def index():
                             series_template["data"] = [round(r[2], 2) for r in rows]
                         elif key == "SGD":
                             series_template["data"] = [round(r[3], 2) for r in rows]
-                        elif key == "AMRules":
+                        elif key == "AMRules (Safe)":
                             series_template["data"] = [round(r[4], 2) for r in rows]
-
-                            # 3. Attach the stars strictly to the AMRules line
-                            if fallback_stars:
-                                series_template["markPoint"] = {
-                                    "data": fallback_stars,
-                                    "animation": False,
-                                }
+                        elif key == "AMRules (Shadow)":
+                            series_template["data"] = [round(r[5], 2) for r in rows]
 
                         series_data.append(series_template)
                         legend_data.append(series_template["name"])
@@ -318,7 +303,7 @@ def index():
                     charts[grade].options["series"] = series_data
                     charts[grade].options["legend"]["data"] = legend_data
 
-                    wear_labels[grade].set_text(f"{rows[-1][5]:.2f}")
+                    wear_labels[grade].set_text(f"{rows[-1][6]:.2f}")
                     charts[grade].update()
             except Exception as e:
                 logger.error("ClickHouse error on %s: %s", grade, e)
