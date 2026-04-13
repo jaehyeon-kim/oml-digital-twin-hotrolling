@@ -45,6 +45,7 @@ object HotRollingJob {
                         ewmaLambda = config.ewmaLambda,
                         sgdLearningRate = config.sgdLearningRate,
                         sgdDecay = config.sgdDecay,
+                        fallbackTolerance = config.fallbackTolerance,
                     ),
                 ).name("OML-Evaluation-And-Training")
 

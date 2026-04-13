@@ -3,10 +3,11 @@ package me.jaehyeon.hotrolling.config
 import java.io.Serializable
 
 data class AppConfig(
-    // OML Hyperparameters
+    // OML Configurations
     val ewmaLambda: Double = 0.02,
     val sgdLearningRate: Double = 0.001,
     val sgdDecay: Double = 0.00001,
+    val fallbackTolerance: Double = 0.15,
     // Kafka Config
     val bootstrapAddress: String = System.getenv("BOOTSTRAP") ?: "kafka-1:19092",
     val predictionRequestsTopic: String = "mill-predictions",

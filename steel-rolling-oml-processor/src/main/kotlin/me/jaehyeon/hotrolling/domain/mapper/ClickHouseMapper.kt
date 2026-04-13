@@ -43,8 +43,10 @@ class ClickHouseMapper : POJOConvertor<MoaEvaluationResult>() {
         out.write(tab)
         writeField(out, result.amRulesApe)
         out.write(tab)
-        // Telemetry
+        // Extra details
         writeField(out, result.wearLevel)
+        out.write(tab)
+        writeField(out, result.isAmRulesFallback)
         out.write(newLine)
     }
 

@@ -17,3 +17,18 @@ class SgdState : Serializable {
 
     constructor()
 }
+
+class AmRulesState : Serializable {
+    var model: AmRulesModel? = null
+    var initialized: Boolean = false
+
+    constructor()
+}
+
+class WelfordState : Serializable {
+    var count: Long = 0
+    var mean: DoubleArray = DoubleArray(0)
+    var m2: DoubleArray = DoubleArray(0)
+
+    constructor()
+}

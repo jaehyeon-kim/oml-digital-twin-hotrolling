@@ -71,8 +71,9 @@ data class MoaEvaluationResult(
     val targetMeanApe: Double,
     val sgdApe: Double,
     val amRulesApe: Double,
-    // Telemetry
+    // Extra details
     val wearLevel: Double,
+    val isAmRulesFallback: Int,
 ) : Serializable
 
 // ==========================================
