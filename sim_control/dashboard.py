@@ -71,6 +71,17 @@ async def apply_drift_config(grade, drift_type, value, freq):
         ui.notify("Failed to send command to Kafka", type="negative")
 
 
+async def handle_apply(g, m, v, f):
+    # Send the command
+    await apply_drift_config(g, m.value, v.value, f.value)
+
+    if m.value == "abrupt":
+        v.value = 0.0
+    else:
+        v.value = 0
+        f.value = 0
+
+
 # ==========================================
 # Dashboard UI
 # ==========================================
@@ -169,14 +180,14 @@ def index():
                                 "font-semibold text-slate-700 text-sm"
                             )
                             freq_input = ui.number(
-                                value=5, format="%d", step=1
+                                value=0, format="%d", step=1
                             ).classes("w-20")
 
                         with ui.column().classes("gap-1 pb-1"):
                             ui.button(
                                 "Apply",
                                 on_click=lambda g=grade, m=mode_select, v=val_input, f=freq_input: (
-                                    apply_drift_config(g, m.value, v.value, f.value)
+                                    handle_apply(g, m, v, f)
                                 ),
                             ).props("color=primary outline")
 
@@ -189,7 +200,7 @@ def index():
                             )
                             series_selections[grade] = ui.select(
                                 options=["Baseline", "Target Mean", "SGD", "AMRules"],
-                                value=["Baseline", "Target Mean", "SGD"],
+                                value=["Baseline", "Target Mean", "SGD", "AMRules"],
                                 multiple=True,
                             ).classes("w-64")
 
@@ -203,7 +214,7 @@ def index():
                                 "text-xs text-slate-500 uppercase font-bold"
                             )
                             wear_labels[grade] = ui.label("0.00").classes(
-                                "text-3xl font-mono font-black text-red-500"
+                                "text-3xl font-mono font-black text-slate-500"
                             )
 
                     # --- CHART ---
@@ -245,8 +256,9 @@ def index():
         for grade in GRADE_MAPPING:
             # Added am_rules_ape to the SQL query
             query = f"""
-                SELECT formatDateTime(evaluation_timestamp, '%H:%M:%S'), 
-                       baseline_ape, target_mean_ape, sgd_ape, am_rules_ape, wear_level
+                SELECT formatDateTime(evaluation_timestamp, '%M:%d\n%H:%S'), 
+                       baseline_ape, target_mean_ape, sgd_ape, am_rules_ape,
+                       wear_level, is_am_rules_fallback
                 FROM dev.oml_evaluation_metrics 
                 WHERE steel_grade = '{grade}' 
                 ORDER BY evaluation_timestamp DESC 
@@ -261,7 +273,26 @@ def index():
                     series_data = []
                     legend_data = []
 
-                    # Dynamically build the chart array based on dropdown selection
+                    # 2. Extract the coordinates for the stars
+                    fallback_stars = []
+                    for r in rows:
+                        timestamp = r[0]
+                        am_rules_ape_val = round(r[4], 2)
+                        is_fallback = r[6]
+
+                        # If fallback triggered, create a star markPoint
+                        if is_fallback == 1:
+                            fallback_stars.append(
+                                {
+                                    "coord": [timestamp, am_rules_ape_val],
+                                    "symbol": "star",
+                                    "symbolSize": 16,
+                                    "itemStyle": {
+                                        "color": "#EF4444"
+                                    },  # Bright red star!
+                                }
+                            )
+
                     for key in active_keys:
                         series_template = series_definitions[key].copy()
                         if key == "Baseline":
@@ -272,6 +303,13 @@ def index():
                             series_template["data"] = [round(r[3], 2) for r in rows]
                         elif key == "AMRules":
                             series_template["data"] = [round(r[4], 2) for r in rows]
+
+                            # 3. Attach the stars strictly to the AMRules line
+                            if fallback_stars:
+                                series_template["markPoint"] = {
+                                    "data": fallback_stars,
+                                    "animation": False,
+                                }
 
                         series_data.append(series_template)
                         legend_data.append(series_template["name"])
@@ -289,4 +327,4 @@ def index():
 
 
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(title="Digital Twin Dashboard", port=8080, show=False, reload=False)
+    ui.run(title="Digital Twin Dashboard", port=8080, show=False, reload=True)
