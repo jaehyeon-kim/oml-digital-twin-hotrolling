@@ -267,7 +267,7 @@ def index():
         for grade in GRADE_MAPPING:
             # Query updated to fetch shadow_ape at index 5
             query = f"""
-                SELECT formatDateTime(evaluation_timestamp, '%H:%i:%S'), 
+                SELECT formatDateTime(evaluation_timestamp, ''%M:%d\n%H:%S''), 
                        baseline_ape, target_mean_ape, sgd_ape, am_rules_ape, am_rules_shadow_ape, wear_level
                 FROM dev.oml_evaluation_metrics 
                 WHERE steel_grade = '{grade}' 
