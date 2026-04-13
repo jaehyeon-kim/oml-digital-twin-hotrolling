@@ -43,6 +43,8 @@ class ClickHouseMapper : POJOConvertor<MoaEvaluationResult>() {
         out.write(tab)
         writeField(out, result.amRulesApe)
         out.write(tab)
+        writeField(out, result.amRulesShadowApe)
+        out.write(tab)
         // Extra details
         writeField(out, result.wearLevel)
         out.write(tab)

@@ -32,7 +32,8 @@ object ClickHouseUtils {
                 baseline_ape Float64,
                 target_mean_ape Float64,
                 sgd_ape Float64,
-                am_rules_ape Float64,                
+                am_rules_ape Float64,
+                am_rules_shadow_ape Float64,
                 wear_level Float64,
                 is_am_rules_fallback UInt8
             ) ENGINE = MergeTree()

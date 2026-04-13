@@ -46,6 +46,7 @@ object HotRollingJob {
                         sgdLearningRate = config.sgdLearningRate,
                         sgdDecay = config.sgdDecay,
                         fallbackTolerance = config.fallbackTolerance,
+                        smoothingFactor = config.smoothingFactor,
                     ),
                 ).name("OML-Evaluation-And-Training")
 

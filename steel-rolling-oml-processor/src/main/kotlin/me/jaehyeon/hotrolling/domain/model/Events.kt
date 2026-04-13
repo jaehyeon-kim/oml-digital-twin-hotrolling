@@ -71,6 +71,7 @@ data class MoaEvaluationResult(
     val targetMeanApe: Double,
     val sgdApe: Double,
     val amRulesApe: Double,
+    val amRulesShadowApe: Double,
     // Extra details
     val wearLevel: Double,
     val isAmRulesFallback: Int,

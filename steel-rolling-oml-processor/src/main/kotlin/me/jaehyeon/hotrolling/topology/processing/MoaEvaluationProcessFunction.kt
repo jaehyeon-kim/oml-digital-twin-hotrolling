@@ -6,6 +6,7 @@ import me.jaehyeon.hotrolling.domain.model.*
 import org.apache.flink.api.common.state.ValueState
 import org.apache.flink.api.common.state.ValueStateDescriptor
 import org.apache.flink.api.common.typeinfo.TypeInformation
+import org.apache.flink.api.common.typeinfo.Types
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction
 import org.apache.flink.util.Collector
@@ -22,6 +23,7 @@ class MoaEvaluationProcessFunction(
     private val sgdLearningRate: Double,
     private val sgdDecay: Double,
     private val fallbackTolerance: Double,
+    private val smoothingFactor: Double,
 ) : KeyedProcessFunction<String, MatchedEvent, MoaEvaluationResult>() {
     @Transient
     private lateinit var logger: Logger
@@ -40,6 +42,10 @@ class MoaEvaluationProcessFunction(
     // Helper Component
     private lateinit var scaler: WelfordScaler
 
+    // Shadow Mode EWMA States
+    private lateinit var amRulesApeEwmaState: ValueState<Double>
+    private lateinit var baselineApeEwmaState: ValueState<Double>
+
     override fun open(parameters: Configuration) {
         logger = LoggerFactory.getLogger(MoaEvaluationProcessFunction::class.java)
 
@@ -54,6 +60,15 @@ class MoaEvaluationProcessFunction(
         amRulesByteState =
             runtimeContext.getState(
                 ValueStateDescriptor("amrules-byte-state", TypeInformation.of(ByteArray::class.java)),
+            )
+
+        amRulesApeEwmaState =
+            runtimeContext.getState(
+                ValueStateDescriptor("amrules-ewma-state", Types.DOUBLE),
+            )
+        baselineApeEwmaState =
+            runtimeContext.getState(
+                ValueStateDescriptor("baseline-ewma-state", Types.DOUBLE),
             )
 
         activeAmRulesModels = mutableMapOf()
@@ -118,11 +133,12 @@ class MoaEvaluationProcessFunction(
 
         if (amRulesModel == null) {
             val serializedBytes = amRulesByteState.value()
-            if (serializedBytes != null) {
-                amRulesModel = deserializeModel(serializedBytes)
-            } else {
-                amRulesModel = AmRulesModel(features.size)
-            }
+            amRulesModel =
+                if (serializedBytes != null) {
+                    deserializeModel(serializedBytes)
+                } else {
+                    AmRulesModel(features.size)
+                }
             activeAmRulesModels[routingKey] = amRulesModel
         }
 
@@ -131,19 +147,29 @@ class MoaEvaluationProcessFunction(
         val rawAmRulesForce = baselineForce + amRulesResidual
 
         // ---------------------------------------------------------
-        // ML STRATEGY 5: FALLBACK GUARDRAIL (Champion/Challenger)
+        // ML STRATEGY 5: SHADOW MODE ROUTER (Safety + Trust)
         // ---------------------------------------------------------
-        val maxSafeCorrection = baselineForce * fallbackTolerance
+        val recentAmRulesApe = amRulesApeEwmaState.value() ?: 0.0
+        val recentBaselineApe = baselineApeEwmaState.value() ?: 0.0
 
-        // Capture the boolean state
-        val isFallbackTriggered = abs(amRulesResidual) > maxSafeCorrection
+        // 1. Physical Safety Check (Catastrophic Error Prevention)
+        val maxSafeCorrection = baselineForce * fallbackTolerance
+        val isPhysicallyUnsafe = abs(amRulesResidual) > maxSafeCorrection
+
+        // 2. Trust Check (Is the AI currently worse than pure physics? 1.0% buffer)
+        val isUntrusted = recentAmRulesApe > (recentBaselineApe + 1.0)
+
+        // 3. The Ultimate Routing Decision
+        val isFallbackTriggered = isPhysicallyUnsafe || isUntrusted
+
         val finalAmRulesForce =
             if (isFallbackTriggered) {
                 logger.warn(
-                    ">>> [FALLBACK TRIGGERED] AMRules hallucination detected on $routingKey. Attempted to correct by ${String.format(
+                    @Suppress("ktlint:standard:max-line-length")
+                    ">>> [SHADOW MODE] AMRules suppressed on $routingKey. Unsafe: $isPhysicallyUnsafe | Untrusted: $isUntrusted (Recent APE: ${String.format(
                         "%.2f",
-                        (abs(amRulesResidual) / baselineForce) * 100,
-                    )}%. Falling back to Physical Baseline.",
+                        recentAmRulesApe,
+                    )}% vs Base: ${String.format("%.2f", recentBaselineApe)}%)",
                 )
                 baselineForce
             } else {
@@ -157,14 +183,21 @@ class MoaEvaluationProcessFunction(
         val baselineApe = calculateApe(baselineForce, actualForce)
         val targetMeanApe = calculateApe(targetMeanForce, actualForce)
         val sgdApe = calculateApe(sgdForce, actualForce)
-        val amRulesApe = calculateApe(finalAmRulesForce, actualForce)
+
+        // Calculate both the Shadow APE (what it wanted to do) and Safe APE (what it actually did)
+        val amRulesShadowApe = calculateApe(rawAmRulesForce, actualForce)
+        val amRulesSafeApe = calculateApe(finalAmRulesForce, actualForce)
+
+        // --- UPDATE TRUST SCORES (EWMA) ---
+        amRulesApeEwmaState.update((smoothingFactor * amRulesShadowApe) + ((1.0 - smoothingFactor) * recentAmRulesApe))
+        baselineApeEwmaState.update((smoothingFactor * baselineApe) + ((1.0 - smoothingFactor) * recentBaselineApe))
 
         logger.info(
             @Suppress("ktlint:standard:max-line-length")
-            "<<< [EVALUATED] ${request.identifiers.steelGrade} | ${request.identifiers.slabId}-P${request.identifiers.passNumber} | SGD: ${String.format(
+            "<<< [EVALUATED] ${request.identifiers.steelGrade} | ${request.identifiers.slabId}-P${request.identifiers.passNumber} | Safe APE: ${String.format(
                 "%.2f",
-                sgdApe,
-            )}% | AMRules: ${String.format("%.2f", amRulesApe)}%",
+                amRulesSafeApe,
+            )}% | Shadow APE: ${String.format("%.2f", amRulesShadowApe)}%",
         )
 
         // --- EMIT TO CLICKHOUSE ---
@@ -182,7 +215,8 @@ class MoaEvaluationProcessFunction(
                 baselineApe = baselineApe,
                 targetMeanApe = targetMeanApe,
                 sgdApe = sgdApe,
-                amRulesApe = amRulesApe, // Guardrailed APE
+                amRulesApe = amRulesSafeApe, // Guardrailed APE
+                amRulesShadowApe = amRulesShadowApe, // Raw Brain Error
                 wearLevel = gt.groundTruth.wearLevel,
                 isAmRulesFallback = if (isFallbackTriggered) 1 else 0,
             ),
