@@ -67,8 +67,8 @@ def drift_engine(env: DynamicRealtimeEnvironment, product_lines: list[str]):
                         new_wear = current_wear + step_value
 
                         # Bounce Logic: Reverse direction if hitting boundaries to keep the simulation running infinitely
-                        if new_wear >= 100.0:
-                            new_wear = 100.0
+                        if new_wear >= 60.0:
+                            new_wear = 60.0
                             velocity_var["value"] = -abs(
                                 step_value
                             )  # Force downward trajectory
