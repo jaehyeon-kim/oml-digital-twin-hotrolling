@@ -1,3 +1,11 @@
+"""
+Pydantic Schemas for Kafka Event Serialization.
+
+This module defines the strict data contracts between the Python Simulation Engine
+and the Kotlin Flink Online Machine Learning pipeline. Strong typing here guarantees
+that Flink's Jackson Deserializer will parse the JSON payloads without failing.
+"""
+
 from pydantic import BaseModel, Field
 
 
@@ -6,7 +14,8 @@ from pydantic import BaseModel, Field
 # ==========================================
 class PredictionIdentifiers(BaseModel):
     """
-    Metadata used for tracking, routing, and joining streams.
+    Metadata used by Flink for tracking, routing, and joining streams.
+    These fields do not enter the ML model as features.
     """
 
     slab_id: str = Field(
@@ -16,17 +25,17 @@ class PredictionIdentifiers(BaseModel):
         ge=1, le=10, description="The specific rolling pass (e.g., 1 through 7)."
     )
     steel_grade: str = Field(
-        ..., description="Material classification (e.g., 'Nb-V-Ti_Microalloyed')."
+        ..., description="Material classification (e.g., 'structural')."
     )
     routing_key: str = Field(
-        ..., description="Composite key for Flink state partitioning."
+        ..., description="Composite key for Flink KeyedState partitioning."
     )
 
 
 class Features(BaseModel):
     """
-    Contains the 13 raw process parameters matching the plant database (Table 2),
-    plus the global simulation control variable.
+    Contains the 13 raw process parameters matching the real-world plant database.
+    These are the independent variables ($X$) used by the AMRules and SGD models.
     """
 
     reheating_time_min: float = Field(
@@ -85,6 +94,8 @@ class Features(BaseModel):
 class BaselinePrediction(BaseModel):
     """
     The legacy theoretical estimate calculated by static metallurgical formulas.
+    The OML model targets the *residual* (Actual - Baseline) rather than predicting
+    the absolute force from scratch.
     """
 
     baseline_roll_force_kn: float = Field(
@@ -94,8 +105,8 @@ class BaselinePrediction(BaseModel):
 
 class PredictionRequestEvent(BaseModel):
     """
-    Event A: Sent into Kafka the moment the slab approaches the roller,
-    but before the physical pass occurs.
+    Event A: Sent into Kafka the moment the slab approaches the roller.
+    This acts as the trigger for Flink to calculate the AI's "Shadow Prediction".
     """
 
     event_type: str = Field(
@@ -110,7 +121,6 @@ class PredictionRequestEvent(BaseModel):
     baseline_prediction: BaselinePrediction
 
     def to_json(self) -> str:
-        """Serializes the Pydantic model to a JSON string for Kafka transmission."""
         return self.model_dump_json()
 
 
@@ -119,8 +129,8 @@ class PredictionRequestEvent(BaseModel):
 # ==========================================
 class GroundTruthIdentifiers(BaseModel):
     """
-    Minimal identifiers needed by Flink to join this ground truth
-    back to the original prediction request.
+    Minimal identifiers needed by Flink's EventMatchProcessFunction to join
+    this ground truth back to the original PredictionRequestEvent (Event A).
     """
 
     slab_id: str = Field(..., description="Unique identifier for the steel block.")
@@ -132,20 +142,23 @@ class GroundTruthIdentifiers(BaseModel):
 class GroundTruthMetrics(BaseModel):
     """
     The realistic, simulated physical readings taken after the steel is crushed.
+    This acts as the dependent target variable ($y$) for the ML pipelines.
     """
 
     actual_roll_force_kn: float = Field(
         ge=0.0, description="The true physical force exerted (kilonewtons)."
     )
     wear_level: float = Field(
-        ge=0.0, le=100.0, description="The wear level of the mill roller."
+        ge=0.0,
+        le=100.0,
+        description="The wear level of the mill roller (hidden state).",
     )
 
 
 class GroundTruthEvent(BaseModel):
     """
-    Event B: Sent into Kafka after a simulated physical delay.
-    Represents the actual factory measurement used by MOA to evaluate and train models.
+    Event B: Sent into Kafka after the physical pass completes.
+    Represents the actual factory measurement used by Flink to evaluate and train models.
     """
 
     event_type: str = Field(
@@ -158,5 +171,4 @@ class GroundTruthEvent(BaseModel):
     ground_truth: GroundTruthMetrics
 
     def to_json(self) -> str:
-        """Serializes the Pydantic model to a JSON string for Kafka transmission."""
         return self.model_dump_json()
