@@ -50,3 +50,13 @@ These are the hidden physical state variables driving the concept drift. They ar
 
 - **`baseline_roll_force_kn`** (Float): The legacy mathematical estimate (sent in Event A).
 - **`actual_roll_force_kn`** (Float): The simulated physical reality, influenced by baseline physics, the hidden line-specific wear state, and Gaussian noise (sent in Event B).
+
+#### Evaluation Metrics (ClickHouse / Dashboard)
+
+The Flink pipeline evaluates multiple models simultaneously and calculates the Absolute Percentage Error (APE) for each.
+
+- **`baseline_ape`** (Float): The error of the pure physical formula.
+- **`target_mean_ape`** (Float): A hybrid EWMA target mean tracker.
+- **`sgd_ape`** (Float): Stochastic Gradient Descent ML error.
+- **`am_rules_shadow_ape`** (Float): The "Raw Brain" error of the AMRules model. This tracks what the AI _wanted_ to do, regardless of whether it was safe.
+- **`am_rules_ape`** (Float): The "Safe / Factory-Floor" error. Governed by the **Shadow Mode Router**, this value matches the AI's prediction when trusted, but snaps to the `baseline_ape` when the AI is caught hallucinating.
