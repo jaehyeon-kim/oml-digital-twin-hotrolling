@@ -7,9 +7,26 @@ import org.apache.kafka.clients.admin.NewTopic
 import org.slf4j.LoggerFactory
 import java.util.Properties
 
+/**
+ * Utility object for managing Kafka infrastructure.
+ *
+ * Ensures that required Kafka topics are provisioned before the Flink job attempts
+ * to consume from them. If Flink attempts to consume a non-existent topic, the job
+ * will enter a failure state.
+ */
 object KafkaUtils {
     private val logger = LoggerFactory.getLogger(KafkaUtils::class.java)
 
+    /**
+     * Connects to the Kafka AdminClient, queries existing topics, and creates any
+     * missing topics required by the pipeline.
+     *
+     * Args:
+     * config: The global application configuration containing the broker address and topic names.
+     * partitions: The number of partitions to create for new topics. Multiple partitions
+     * allow Flink to read data concurrently across multiple workers.
+     * replication: The replication factor for high availability. Defaults to 1 for local development.
+     */
     fun ensureTopicsExist(
         config: AppConfig,
         partitions: Int = 3,

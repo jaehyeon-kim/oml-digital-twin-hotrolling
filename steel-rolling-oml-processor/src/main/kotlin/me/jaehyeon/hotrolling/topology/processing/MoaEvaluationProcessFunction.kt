@@ -18,6 +18,20 @@ import java.io.ObjectInputStream
 import java.io.ObjectOutputStream
 import kotlin.math.abs
 
+/**
+ * The core Online Machine Learning engine and Shadow Mode Router.
+ *
+ * This function processes strictly matched Prediction and Ground Truth pairs.
+ * It is partitioned (Keyed) by steel grade to ensure that machine learning models do not suffer from
+ * catastrophic forgetting when switching between fundamentally different physics.
+ *
+ * Args:
+ * ewmaLambda: Learning rate for the Target Mean tracking.
+ * sgdLearningRate: Step size for the Stochastic Gradient Descent optimizer.
+ * sgdDecay: L2 regularization penalty applied to SGD weights to prevent exploding gradients.
+ * fallbackTolerance: Maximum percentage the AI is allowed to deviate from the physics baseline.
+ * smoothingFactor: Alpha value for the Shadow Mode Exponentially Weighted Moving Average trust score.
+ */
 class MoaEvaluationProcessFunction(
     private val ewmaLambda: Double,
     private val sgdLearningRate: Double,
@@ -28,27 +42,27 @@ class MoaEvaluationProcessFunction(
     @Transient
     private lateinit var logger: Logger
 
-    // ML States (Simple Models use POJO state)
+    // Flink Managed State (Fault-Tolerant)
     private lateinit var targetMeanState: ValueState<TargetMeanState>
     private lateinit var sgdState: ValueState<SgdState>
 
-    // STRATEGY B: MOA Model uses Raw Byte State to avoid Kryo
+    // Serialized AMRules Model to bypass Kryo serialization limitations with complex Java objects
     private lateinit var amRulesByteState: ValueState<ByteArray>
 
-    // STRATEGY B: Transient In-Memory Cache for Lightning-Fast Execution
-    @Transient
-    private lateinit var activeAmRulesModels: MutableMap<String, AmRulesModel>
-
-    // Helper Component
-    private lateinit var scaler: WelfordScaler
-
-    // Shadow Mode EWMA States
+    // EWMA Memory states used to calculate the Shadow Mode Trust Score
     private lateinit var amRulesApeEwmaState: ValueState<Double>
     private lateinit var baselineApeEwmaState: ValueState<Double>
+
+    // Transient In-Memory State (Performance)
+    // Caches deserialized models to avoid heavy byte parsing on every single event.
+    @Transient
+    private lateinit var activeAmRulesModels: MutableMap<String, AmRulesModel>
+    private lateinit var scaler: WelfordScaler
 
     override fun open(parameters: Configuration) {
         logger = LoggerFactory.getLogger(MoaEvaluationProcessFunction::class.java)
 
+        // Initialize state descriptors. TypeInformation ensures Flink knows exactly how to serialize these.
         targetMeanState =
             runtimeContext.getState(
                 ValueStateDescriptor("target-mean-state", TypeInformation.of(TargetMeanState::class.java)),
@@ -61,7 +75,6 @@ class MoaEvaluationProcessFunction(
             runtimeContext.getState(
                 ValueStateDescriptor("amrules-byte-state", TypeInformation.of(ByteArray::class.java)),
             )
-
         amRulesApeEwmaState =
             runtimeContext.getState(
                 ValueStateDescriptor("amrules-ewma-state", Types.DOUBLE),
@@ -72,7 +85,6 @@ class MoaEvaluationProcessFunction(
             )
 
         activeAmRulesModels = mutableMapOf()
-
         scaler = WelfordScaler(16)
         scaler.open(runtimeContext)
     }
@@ -89,25 +101,24 @@ class MoaEvaluationProcessFunction(
         val actualForce = gt.groundTruth.actualRollForceKn
         val baselineForce = request.baselinePrediction.baselineRollForceKn
 
-        // ---------------------------------------------------------
-        // TARGET MEAN (HYBRID EWMA)
-        // ---------------------------------------------------------
+        // 1. TARGET MEAN (HYBRID EWMA)
+        // Calculates a simple moving average of the baseline error and uses it as a bias offset.
         val meanState = targetMeanState.value() ?: TargetMeanState()
         val currentEwmaError = if (meanState.initialized) meanState.currentMean else 0.0
         val targetMeanForce = baselineForce + currentEwmaError
+
         val actualError = actualForce - baselineForce
         meanState.currentMean = (ewmaLambda * actualError) + ((1 - ewmaLambda) * currentEwmaError)
         meanState.initialized = true
         targetMeanState.update(meanState)
 
-        // ---------------------------------------------------------
-        // ML STRATEGY 2: FEATURE NORMALIZATION
-        // ---------------------------------------------------------
+        // 2. FEATURE NORMALIZATION (WELFORD SCALER)
+        // Neural networks and SGD require standard scaled inputs (Z-Scores).
+        // Welford algorithm calculates this on the fly without needing full dataset passes.
         val features = scaler.scale(request.features)
 
-        // ---------------------------------------------------------
-        // ML STRATEGY 3: STOCHASTIC GRADIENT DESCENT (SGD)
-        // ---------------------------------------------------------
+        // 3. STOCHASTIC GRADIENT DESCENT
+        // A manual, lightweight linear regressor tracking streaming weights and biases.
         val sgd = sgdState.value() ?: SgdState()
         if (!sgd.initialized) {
             sgd.weights = DoubleArray(features.size) { 0.0 }
@@ -118,6 +129,7 @@ class MoaEvaluationProcessFunction(
         for (i in features.indices) {
             sgdForce += sgd.weights[i] * features[i]
         }
+
         val sgdError = actualForce - sgdForce
         sgd.bias += sgdLearningRate * sgdError
         for (i in features.indices) {
@@ -126,11 +138,10 @@ class MoaEvaluationProcessFunction(
         }
         sgdState.update(sgd)
 
-        // ---------------------------------------------------------
-        // ML STRATEGY 4: AMRULES (Strategy B: Byte Serialization)
-        // ---------------------------------------------------------
+        // 4. AMRULES EVALUATION (PREQUENTIAL LEARNING)
         var amRulesModel = activeAmRulesModels[routingKey]
 
+        // Lazy initialization and deserialization from Flink state
         if (amRulesModel == null) {
             val serializedBytes = amRulesByteState.value()
             amRulesModel =
@@ -142,24 +153,24 @@ class MoaEvaluationProcessFunction(
             activeAmRulesModels[routingKey] = amRulesModel
         }
 
+        // The Test-then-Train paradigm. We evaluate the model prediction BEFORE updating it.
         val trueResidual = actualForce - baselineForce
         val amRulesResidual = amRulesModel.predictAndTrain(features, trueResidual)
         val rawAmRulesForce = baselineForce + amRulesResidual
 
-        // ---------------------------------------------------------
-        // ML STRATEGY 5: SHADOW MODE ROUTER (Safety + Trust)
-        // ---------------------------------------------------------
+        // 5. SHADOW MODE ROUTER (SAFETY GUARDRAIL AND TRUST SCORING)
+        // Fetch the historical performance (trust) of both systems
         val recentAmRulesApe = amRulesApeEwmaState.value() ?: 0.0
         val recentBaselineApe = baselineApeEwmaState.value() ?: 0.0
 
-        // 1. Physical Safety Check (Catastrophic Error Prevention)
+        // Check A: Physical Safety Limit (Hard boundary on AI hallucination)
         val maxSafeCorrection = baselineForce * fallbackTolerance
         val isPhysicallyUnsafe = abs(amRulesResidual) > maxSafeCorrection
 
-        // 2. Trust Check (Is the AI currently worse than pure physics? 1.0% buffer)
+        // Check B: Trust Deficit (Is the AI currently performing worse than pure physics)
         val isUntrusted = recentAmRulesApe > (recentBaselineApe + 1.0)
 
-        // 3. The Ultimate Routing Decision
+        // The Routing Decision
         val isFallbackTriggered = isPhysicallyUnsafe || isUntrusted
 
         val finalAmRulesForce =
@@ -171,24 +182,26 @@ class MoaEvaluationProcessFunction(
                         recentAmRulesApe,
                     )}% vs Base: ${String.format("%.2f", recentBaselineApe)}%)",
                 )
-                baselineForce
+                baselineForce // Route to safe physics
             } else {
-                rawAmRulesForce
+                rawAmRulesForce // Route to AI
             }
 
-        // Serialize and flush back to Flink ValueState
+        // Flush trained model back to durable state
         amRulesByteState.update(serializeModel(amRulesModel))
 
-        // --- APE CALCULATIONS ---
+        // APE (Absolute Percentage Error) CALCULATIONS
         val baselineApe = calculateApe(baselineForce, actualForce)
         val targetMeanApe = calculateApe(targetMeanForce, actualForce)
         val sgdApe = calculateApe(sgdForce, actualForce)
 
-        // Calculate both the Shadow APE (what it wanted to do) and Safe APE (what it actually did)
+        // Shadow APE represents what the AI wanted to do (Unfiltered)
+        // Safe APE represents what actually happened on the factory floor (Filtered)
         val amRulesShadowApe = calculateApe(rawAmRulesForce, actualForce)
         val amRulesSafeApe = calculateApe(finalAmRulesForce, actualForce)
 
-        // --- UPDATE TRUST SCORES (EWMA) ---
+        // UPDATE EWMA TRUST SCORES
+        // Updates the memory of the system so the router can make informed decisions on the next slab.
         amRulesApeEwmaState.update((smoothingFactor * amRulesShadowApe) + ((1.0 - smoothingFactor) * recentAmRulesApe))
         baselineApeEwmaState.update((smoothingFactor * baselineApe) + ((1.0 - smoothingFactor) * recentBaselineApe))
 
@@ -200,7 +213,7 @@ class MoaEvaluationProcessFunction(
             )}% | Shadow APE: ${String.format("%.2f", amRulesShadowApe)}%",
         )
 
-        // --- EMIT TO CLICKHOUSE ---
+        // EMIT RESULTS TO CLICKHOUSE SINK
         out.collect(
             MoaEvaluationResult(
                 evaluationTimestamp = gt.timestamp.toEpochMilli(),
@@ -210,22 +223,23 @@ class MoaEvaluationProcessFunction(
                 baselineRollForceKn = baselineForce,
                 targetMeanRollForceKn = targetMeanForce,
                 sgdRollForceKn = sgdForce,
-                amRulesRollForceKn = finalAmRulesForce, // Using the guardrailed output
+                amRulesRollForceKn = finalAmRulesForce,
                 actualRollForceKn = actualForce,
                 baselineApe = baselineApe,
                 targetMeanApe = targetMeanApe,
                 sgdApe = sgdApe,
-                amRulesApe = amRulesSafeApe, // Guardrailed APE
-                amRulesShadowApe = amRulesShadowApe, // Raw Brain Error
+                amRulesApe = amRulesSafeApe,
+                amRulesShadowApe = amRulesShadowApe,
                 wearLevel = gt.groundTruth.wearLevel,
                 isAmRulesFallback = if (isFallbackTriggered) 1 else 0,
             ),
         )
     }
 
-    // =========================================================
-    // NATIVE JAVA SERIALIZATION HELPERS
-    // =========================================================
+    // JAVA NATIVE SERIALIZATION HELPERS
+    // MOA AMRulesRegressor is deeply complex and breaks Flink native Kryo serializers.
+    // We manually convert it to standard byte arrays for safe checkpointing.
+
     private fun serializeModel(model: AmRulesModel): ByteArray {
         ByteArrayOutputStream().use { baos ->
             ObjectOutputStream(baos).use { oos ->
@@ -243,6 +257,9 @@ class MoaEvaluationProcessFunction(
         }
     }
 
+    /**
+     * Calculates the Absolute Percentage Error.
+     */
     private fun calculateApe(
         predicted: Double,
         actual: Double,

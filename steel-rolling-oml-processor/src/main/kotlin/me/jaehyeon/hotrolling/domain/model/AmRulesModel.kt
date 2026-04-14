@@ -8,6 +8,15 @@ import com.yahoo.labs.samoa.instances.InstancesHeader
 import moa.classifiers.rules.AMRulesRegressor
 import java.io.Serializable
 
+/**
+ * A serializable wrapper bridging Flink with the Massive Online Analysis library.
+ *
+ * AMRules (Adaptive Model Rules) is a state-of-the-art Hoeffding-Tree based regressor that
+ * natively detects concept drift via Page-Hinkley tests and prunes or grows rules dynamically.
+ *
+ * Args:
+ * numFeatures: The number of independent variables passed into the model.
+ */
 class AmRulesModel(
     private val numFeatures: Int,
 ) : Serializable {
@@ -15,32 +24,42 @@ class AmRulesModel(
     private var header: InstancesHeader
 
     init {
-        // 1. Define the attributes (Features + Target)
+        // Define the attribute schema (Features plus Target) required by the MOA framework
         val attributes = java.util.ArrayList<Attribute>()
         for (i in 0 until numFeatures) {
             attributes.add(Attribute("Feature_$i"))
         }
-        attributes.add(Attribute("Target_Residual")) // The error we want to predict
+        attributes.add(Attribute("Target_Residual")) // The physical error we want to predict and correct
 
-        // 2. Create the dataset header for MOA
-        // MOA strictly requires Instances to be wrapped in an InstancesHeader
+        // Create the dataset header. MOA strictly requires Instance objects to be wrapped
+        // in an InstancesHeader to understand dimensional boundaries.
         val dataset = Instances("HotRollingDataset", attributes, 0)
-        dataset.setClassIndex(numFeatures) // The last attribute is the target
+        dataset.setClassIndex(numFeatures) // Declare the final attribute as the target
         header = InstancesHeader(dataset)
 
-        // 3. Configure AMRules Hyperparameters
-        // AMRulesRegressor natively uses Page-Hinkley for drift detection by default
+        // Initialize the Regressor
         amRules.prepareForUse()
         amRules.setModelContext(header)
     }
 
+    /**
+     * Executes the Prequential Test-then-Train loop on a single streaming event.
+     *
+     * In Online Learning, an event must be evaluated BEFORE the model is allowed to train on it.
+     * Otherwise, the error metrics are artificially deflated due to data leakage.
+     *
+     * Args:
+     * features: Scaled Z-Scores of the current slab pass.
+     * actualResidual: The true physical error (Actual Force minus Baseline Force).
+     *
+     * Returns:
+     * The model prediction of what the residual would be, evaluated prior to training.
+     */
     fun predictAndTrain(
         features: DoubleArray,
         actualResidual: Double,
     ): Double {
-        // 1. Create a MOA Instance from our Welford-scaled features
-        // We explicitly cast to the `Instance` interface to expose setDataset and setClassValue.
-        // DenseInstance requires a weight (1.0) and a DoubleArray of values.
+        // Construct the MOA dense instance
         val instance: Instance = DenseInstance(1.0, DoubleArray(numFeatures + 1))
         instance.setDataset(header)
 
@@ -48,22 +67,21 @@ class AmRulesModel(
             instance.setValue(i, features[i])
         }
 
-        // Set the actual target (what the model SHOULD have predicted)
+        // The target must be set for the training phase to calculate loss gradients
         instance.setClassValue(actualResidual)
 
-        // 2. Predict the residual BEFORE training (Pre-quential evaluation)
-        // Kotlin interprets MOA's double[] return type as a nullable DoubleArray?
+        // PREDICT: Execute the Test phase
         val predictionArray: DoubleArray? = amRules.getVotesForInstance(instance)
 
-        // Safely extract the prediction, defaulting to 0.0 if empty/null
+        // Extract prediction safely
         val predictedResidual =
             if (predictionArray != null && predictionArray.isNotEmpty()) {
                 predictionArray[0]
             } else {
-                0.0
+                0.0 // Default to zero adjustment if the model is uninitialized
             }
 
-        // 3. Train the model on the true physical residual
+        // TRAIN: Learn from the true physical residual
         amRules.trainOnInstance(instance)
 
         return predictedResidual

@@ -8,9 +8,23 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 
+/**
+ * Utility object for bootstrapping the ClickHouse database environment.
+ *
+ * Ensures that the target database and MergeTree table exist before the Flink job
+ * begins processing. This prevents the streaming pipeline from crashing due to
+ * missing infrastructure on startup.
+ */
 object ClickHouseUtils {
     private val logger = LoggerFactory.getLogger(ClickHouseUtils::class.java)
 
+    /**
+     * Connects to ClickHouse via HTTP and executes Data Definition Language statements.
+     *
+     * The table created uses the MergeTree engine, which is optimized for massive
+     * time-series data ingestion. The ORDER BY clause is critical: it physically sorts
+     * the data on disk by timestamp and steel grade, making dashboard queries lightning fast.
+     */
     fun ensureTableExists(config: AppConfig) {
         val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()
 
@@ -43,6 +57,9 @@ object ClickHouseUtils {
         executeSql(client, config, createTableSql)
     }
 
+    /**
+     * Executes a raw SQL query against the ClickHouse HTTP interface.
+     */
     private fun executeSql(
         client: HttpClient,
         config: AppConfig,

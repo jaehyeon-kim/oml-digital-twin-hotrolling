@@ -5,8 +5,13 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import java.io.Serializable
 
 // ==========================================
-// Prediction Request Event
+// Prediction Request Event (Event A)
 // ==========================================
+
+/**
+ * Represents the data available just before the steel slab enters the rollers.
+ * Jackson annotations are used to map the Python snake_case JSON into Kotlin camelCase.
+ */
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class PredictionRequestEvent(
     val timestamp: String,
@@ -30,8 +35,12 @@ data class BaselinePrediction(
 ) : Serializable
 
 // ==========================================
-// Ground Truth Event
+// Ground Truth Event (Event B)
 // ==========================================
+
+/**
+ * Represents the physical reality measured after the steel has been rolled.
+ */
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class GroundTruthEvent(
     val timestamp: String,
@@ -53,8 +62,13 @@ data class GroundTruthMetrics(
 ) : Serializable
 
 // ==========================================
-// Output Sink: MOA Evaluation Result (To ClickHouse)
+// Output Sink: MOA Evaluation Result
 // ==========================================
+
+/**
+ * The final output payload containing all calculations, predictions, and errors.
+ * This class is ultimately mapped into a Tab-Separated sequence for ClickHouse ingestion.
+ */
 data class MoaEvaluationResult(
     val evaluationTimestamp: Long,
     val steelGrade: String,
@@ -66,13 +80,13 @@ data class MoaEvaluationResult(
     val sgdRollForceKn: Double,
     val amRulesRollForceKn: Double,
     val actualRollForceKn: Double,
-    // ML Evaluation Metrics
+    // Machine Learning Evaluation Metrics
     val baselineApe: Double,
     val targetMeanApe: Double,
     val sgdApe: Double,
     val amRulesApe: Double,
     val amRulesShadowApe: Double,
-    // Extra details
+    // Extra details and context
     val wearLevel: Double,
     val isAmRulesFallback: Int,
 ) : Serializable
@@ -80,6 +94,11 @@ data class MoaEvaluationResult(
 // ==========================================
 // Internal Flink Pipeline Models
 // ==========================================
+
+/**
+ * A combined state object representing a successful join between a prediction
+ * request and its corresponding ground truth reality.
+ */
 data class MatchedEvent(
     val prediction: PredictionRequestEvent,
     val groundTruth: GroundTruthEvent,
