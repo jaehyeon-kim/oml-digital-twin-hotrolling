@@ -8,7 +8,7 @@ data class AppConfig(
     val sgdLearningRate: Double = 0.001,
     val sgdDecay: Double = 0.00001,
     val fallbackTolerance: Double = 0.15,
-    val smoothingFactor: Double = 0.3,
+    val smoothingFactor: Double = 0.2,
     // Kafka Config
     val bootstrapAddress: String = System.getenv("BOOTSTRAP") ?: "kafka-1:19092",
     val predictionRequestsTopic: String = "mill-predictions",
