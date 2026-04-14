@@ -1,3 +1,14 @@
+"""
+Real-Time Concept Drift Monitor and Control Plane.
+
+This script runs a NiceGUI web server that continuously polls ClickHouse for the
+latest Online Machine Learning evaluation metrics. It plots the Absolute Percentage Error
+of multiple models (Baseline, SGD, AMRules) in real-time.
+
+It also serves as the Control Plane, allowing operators to inject artificial
+Concept Drift (wear and tear) into the running Python simulation via Kafka Admin commands.
+"""
+
 import logging
 import clickhouse_connect
 from nicegui import ui, run
@@ -20,6 +31,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sim_control.dashboard")
 
+# Attempt initial ClickHouse connection. Fails gracefully if the database is not up yet.
 try:
     ch_client = clickhouse_connect.get_client(
         host=CH_HOST, port=CH_PORT, username=CH_USER, database=CH_DB
@@ -29,8 +41,10 @@ except Exception as e:
     logger.error("ClickHouse Connection Failed: %s", e)
     ch_client = None
 
+# Admin connector used to send configuration overrides into the running DES environment.
 admin = KafkaAdminConnector(bootstrap_servers=KAFKA_BROKER, max_tasks=200)
 
+# Maps UI tabs to internal ClickHouse and Simulation identifiers
 GRADE_MAPPING = {
     "structural": "STRUCTURAL",
     "microalloyed": "MICROALLOYED",
@@ -39,16 +53,27 @@ GRADE_MAPPING = {
 
 
 # ==========================================
-# Control Plane Actions
+# Control Plane Actions (Drift Injection)
 # ==========================================
-async def apply_drift_config(grade, drift_type, value, freq):
+async def apply_drift_config(grade: str, drift_type: str, value: float, freq: int):
+    """
+    Sends a configuration payload to the dynamic-des simulation via Kafka.
+
+    Args:
+        grade: The steel product line to degrade (e.g., structural).
+        drift_type: abrupt for an instant jump, or gradual for an incremental drift over time.
+        value: The target wear level (0.0 to 100.0) or the step increment size.
+        freq: How often (in simulation seconds) the gradual drift should increment.
+    """
     try:
         if drift_type == "abrupt":
+            # 1. Halt any existing gradual drift velocity
             await admin.send_config(
                 TOPIC_CONTROL_INGRESS,
                 f"HotRolling.variables.velocity_{grade}",
                 {"type": "abrupt", "value": 0.0},
             )
+            # 2. Instantly update the physical wear capacity
             await admin.send_config(
                 TOPIC_CONTROL_INGRESS,
                 f"HotRolling.containers.wear_{grade}.current_cap",
@@ -59,6 +84,7 @@ async def apply_drift_config(grade, drift_type, value, freq):
                 type="positive",
             )
         elif drift_type == "gradual":
+            # Inject a moving velocity to the wear container
             payload = {"type": "gradual", "value": float(value), "freq": int(freq)}
             await admin.send_config(
                 TOPIC_CONTROL_INGRESS, f"HotRolling.variables.velocity_{grade}", payload
@@ -72,10 +98,17 @@ async def apply_drift_config(grade, drift_type, value, freq):
 
 
 # ==========================================
-# Dashboard UI
+# Dashboard UI Layout
 # ==========================================
 @ui.page("/")
 def index():
+    """
+    Constructs the main web interface using NiceGUI.
+
+    This layout includes a control panel for injecting drift and an ECharts
+    visualization for tracking the real-time Absolute Percentage Error (APE)
+    of the machine learning models.
+    """
     ui.query("body").style("background-color: #f8fafc")
     ui.colors(primary="#1E3A8A", secondary="#10B981", accent="#F59E0B")
 
@@ -261,11 +294,16 @@ def index():
     # Async Update Loop
     # ==========================================
     async def fetch_and_update():
+        """
+        Background task that runs every 2.0 seconds.
+        It executes an IO-bound ClickHouse query to fetch the latest 60 slabs
+        and updates the ECharts visualization without blocking the UI thread.
+        """
         if not ch_client:
             return
 
         for grade in GRADE_MAPPING:
-            # Query updated to fetch shadow_ape at index 5
+            # Fetches formatting specifically for HH:MM:SS on the X-Axis
             query = f"""
                 SELECT formatDateTime(evaluation_timestamp, '%M:%d\n%H:%S'), 
                        baseline_ape, target_mean_ape, sgd_ape, am_rules_ape, am_rules_shadow_ape, wear_level
@@ -275,7 +313,10 @@ def index():
                 LIMIT 60
             """
             try:
+                # run.io_bound prevents the ClickHouse HTTP call from freezing the NiceGUI event loop
                 result = await run.io_bound(ch_client.query, query)
+
+                # Reverse the rows so the chart plots left-to-right (oldest to newest)
                 rows = list(reversed(result.result_rows))
 
                 if rows:
@@ -285,6 +326,7 @@ def index():
 
                     for key in active_keys:
                         series_template = series_definitions[key].copy()
+                        # Map the UI selection to the correct ClickHouse tuple index
                         if key == "Baseline":
                             series_template["data"] = [round(r[1], 2) for r in rows]
                         elif key == "Target Mean":

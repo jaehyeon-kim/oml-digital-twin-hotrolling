@@ -1,3 +1,11 @@
+"""
+Simulation Entry Point and Orchestrator.
+
+This script boots up the dynamic-des environment. It builds the Kafka infrastructure,
+initializes the statistical distributions (arrival and service times), and spawns
+the asynchronous generator processes representing the physical steel mill.
+"""
+
 import argparse
 import logging
 import time
@@ -25,7 +33,6 @@ from src.config import (
     TOPIC_TELEMETRY,
 )
 
-# Import from our local sibling files
 from routing import custom_topic_router
 from sim_logic import arrival_process, drift_engine, roll_slab
 
@@ -37,31 +44,37 @@ logger = logging.getLogger("generator.main")
 
 
 # ==========================================
-# Parameter Definition
+# Parameter Definition (The Factory Blueprint)
 # ==========================================
+# These parameters define the statistical shape of the factory. Because they are
+# registered with dynamic-des, they can be mutated in real-time via Kafka.
 mill_params = SimParameter(
     sim_id="HotRolling",
+    # Arrival rates determine how frequently a new slab exits the furnace.
     arrival={
         "structural": DistributionConfig(dist="exponential", rate=0.2),
         "microalloyed": DistributionConfig(dist="exponential", rate=0.15),
         "high_alloy": DistributionConfig(dist="exponential", rate=0.1),
     },
+    # Service times represent the physical duration of the steel passing through the rollers.
     service={
         "pass_roughing": DistributionConfig(dist="normal", mean=2.0, std=0.2),
         "pass_intermediate": DistributionConfig(dist="normal", mean=4.5, std=0.5),
         "pass_finishing": DistributionConfig(dist="normal", mean=8.0, std=1.2),
     },
+    # Resources limit simultaneous rolling on the same product line to prevent collisions.
     resources={
         "mill_structural": CapacityConfig(current_cap=4, max_cap=10),
         "mill_microalloyed": CapacityConfig(current_cap=4, max_cap=10),
         "mill_high_alloy": CapacityConfig(current_cap=4, max_cap=10),
     },
+    # Wear containers represent the hidden physical degradation of the machinery.
     containers={
         "wear_structural": CapacityConfig(current_cap=0.001, max_cap=100.0),
         "wear_microalloyed": CapacityConfig(current_cap=0.001, max_cap=100.0),
         "wear_high_alloy": CapacityConfig(current_cap=0.001, max_cap=100.0),
     },
-    # UPDATED: Replaced simple floats with the dictionary schema
+    # Velocity variables dictate how fast the wear containers degrade over time.
     variables={
         "velocity_structural": {"type": "abrupt", "value": 0.0},
         "velocity_microalloyed": {"type": "abrupt", "value": 0.0},
@@ -74,7 +87,13 @@ mill_params = SimParameter(
 # Infrastructure Loops
 # ==========================================
 def telemetry_monitor(env: DynamicRealtimeEnvironment, product_lines: list[str]):
-    """Streams the current system health and true hidden drift levels to the UI."""
+    """
+    Streams the current system health and true hidden drift levels to the UI.
+
+    Args:
+        env (DynamicRealtimeEnvironment): The active simulation environment.
+        product_lines (list[str]): The grades of steel being monitored.
+    """
     while True:
         for prod in product_lines:
             wear_path = f"HotRolling.containers.wear_{prod}.current_cap"
@@ -87,10 +106,20 @@ def telemetry_monitor(env: DynamicRealtimeEnvironment, product_lines: list[str])
 # Main Execution
 # ==========================================
 def run(seed: int, factor: float, variable_passes: bool, max_passes: int):
+    """
+    Constructs the environment, provisions Kafka topics, and starts the clock.
+
+    Args:
+        seed (int): The random seed for reproducible stochastic behaviors.
+        factor (float): Real-time speed multiplier (e.g., factor=10.0 runs 10x faster than real-time).
+        variable_passes (bool): If True, slabs take a random number of passes.
+        max_passes (int): The maximum number of passes a slab can undergo.
+    """
     TOPICS_CONFIG = [
         {"name": TOPIC_CONTROL_INGRESS, "partitions": 1},
         {"name": TOPIC_TELEMETRY, "partitions": 1},
         {"name": TOPIC_LIFECYCLE, "partitions": 1},
+        # Partitioning by 3 allows Flink to scale out and process grades concurrently
         {"name": TOPIC_PREDICTION_REQUESTS, "partitions": 3},
         {"name": TOPIC_GROUND_TRUTH, "partitions": 3},
     ]
@@ -105,6 +134,7 @@ def run(seed: int, factor: float, variable_passes: bool, max_passes: int):
     env = DynamicRealtimeEnvironment(factor=factor)
     env.registry.register_sim_parameter(mill_params)
 
+    # Ingress listens for Dashboard commands; Egress routes generated data out.
     ingress = KafkaIngress(bootstrap_servers=KAFKA_BROKER, topic=TOPIC_CONTROL_INGRESS)
     egress = KafkaEgress(
         bootstrap_servers=KAFKA_BROKER, topic_router=custom_topic_router
@@ -122,6 +152,7 @@ def run(seed: int, factor: float, variable_passes: bool, max_passes: int):
 
     for prod in product_lines:
         mill_res = DynamicResource(env, "HotRolling", f"mill_{prod}")
+        # Prime the mill with a first slab to prevent dry-starts
         primer_hash = uuid.uuid4().hex[:8].upper()
 
         env.process(
@@ -163,14 +194,12 @@ if __name__ == "__main__":
         default=1.0,
         help="Simulation real-time speed factor (default: 1.0)",
     )
-
     parser.add_argument(
         "--variable-passes",
         "-v",
         action="store_true",
         help="Enable variable number of passes. If omitted, uses fixed max-passes.",
     )
-
     parser.add_argument(
         "--max-passes",
         "-p",
