@@ -28,17 +28,19 @@ data class AppConfig(
      */
     val sgdDecay: Double = 0.00001,
     /**
-     * Maximum percentage the AI is allowed to deviate from the physics baseline.
-     * For example, 0.15 means the AI cannot predict a force that is more than 15 percent
-     * different from the legacy physics calculation.
+     * Maximum allowed deviation for over-pressing (Strict safety limit to prevent machine damage).
      */
-    val fallbackTolerance: Double = 0.15,
+    val overpressTolerance: Double = 0.25,
+    /**
+     * Maximum allowed deviation for under-pressing (Looser limit to prevent process bottlenecks/rework).
+     */
+    val underpressTolerance: Double = 0.20,
     /**
      * Alpha value for the Shadow Mode Exponentially Weighted Moving Average (EWMA) trust score.
      * A higher value makes the router forget historical errors faster and react quicker
      * to recent performance.
      */
-    val smoothingFactor: Double = 0.3,
+    val smoothingFactor: Double = 0.2,
     // Kafka Configuration
     /**
      * The address of the Kafka bootstrap server.

@@ -29,14 +29,16 @@ import kotlin.math.abs
  * ewmaLambda: Learning rate for the Target Mean tracking.
  * sgdLearningRate: Step size for the Stochastic Gradient Descent optimizer.
  * sgdDecay: L2 regularization penalty applied to SGD weights to prevent exploding gradients.
- * fallbackTolerance: Maximum percentage the AI is allowed to deviate from the physics baseline.
+ * overpressTolerance: Maximum allowed deviation for over-pressing.
+ * underpressTolerance: Maximum allowed deviation for under-pressing.
  * smoothingFactor: Alpha value for the Shadow Mode Exponentially Weighted Moving Average trust score.
  */
 class MoaEvaluationProcessFunction(
     private val ewmaLambda: Double,
     private val sgdLearningRate: Double,
     private val sgdDecay: Double,
-    private val fallbackTolerance: Double,
+    private val overpressTolerance: Double,
+    private val underpressTolerance: Double,
     private val smoothingFactor: Double,
 ) : KeyedProcessFunction<String, MatchedEvent, MoaEvaluationResult>() {
     @Transient
@@ -163,9 +165,13 @@ class MoaEvaluationProcessFunction(
         val recentAmRulesApe = amRulesApeEwmaState.value() ?: 0.0
         val recentBaselineApe = baselineApeEwmaState.value() ?: 0.0
 
-        // Check A: Physical Safety Limit (Hard boundary on AI hallucination)
-        val maxSafeCorrection = baselineForce * fallbackTolerance
-        val isPhysicallyUnsafe = abs(amRulesResidual) > maxSafeCorrection
+        // Check A: Asymmetric Two-Sided Safety Limits
+        val maxSafeOverpress = baselineForce * overpressTolerance
+        val maxSafeUnderpress = baselineForce * underpressTolerance
+
+        // The model is flagged as unsafe if it tries to crush too hard (breaks machine)
+        // OR if it wildly under-crushes (causes massive factory bottlenecks).
+        val isPhysicallyUnsafe = amRulesResidual > maxSafeOverpress || amRulesResidual < -maxSafeUnderpress
 
         // Check B: Trust Deficit (Is the AI currently performing worse than pure physics)
         val isUntrusted = recentAmRulesApe > (recentBaselineApe + 1.0)
