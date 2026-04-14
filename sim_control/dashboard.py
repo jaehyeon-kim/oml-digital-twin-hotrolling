@@ -116,7 +116,7 @@ def index():
         "items-center justify-center bg-primary text-white p-4 shadow-md"
     ):
         with ui.row().classes("w-full max-w-6xl justify-between items-center"):
-            ui.label("Hot Rolling Digital Twin - Concept Drift Monitor").classes(
+            ui.label("Hot Rolling Digital Twin - Control Plane").classes(
                 "text-2xl font-bold"
             )
 
@@ -240,8 +240,6 @@ def index():
                                 ],
                                 value=[
                                     "Baseline",
-                                    "Target Mean",
-                                    "SGD",
                                     "AMRules (Safe)",
                                     "AMRules (Shadow)",
                                 ],
