@@ -2,7 +2,7 @@
 
 A real-time, fault-tolerant Online Machine Learning pipeline and Digital Twin for industrial Hot Strip Mill steel processing.
 
-This system demonstrates how streaming architectures (Apache Flink + Kafka) can be combined with Online Machine Learning (e.g. [AMRules](https://scispace.com/pdf/adaptive-model-rules-from-data-streams-1l7ti6t60h.pdf)) to autonomously correct for physical **Concept Drift** (mechanical wear) in heavy industrial machinery, all while operating safely behind a deterministic **Shadow Mode Router**.
+This system demonstrates how streaming architectures (Apache Flink + Kafka) can be combined with Online Machine Learning (e.g. _AMRules_) to autonomously correct for physical **Concept Drift** (mechanical wear) in heavy industrial machinery, all while operating safely behind a deterministic **Shadow Mode Router**.
 
 ## 🏗️ High-Level System Architecture
 
@@ -22,13 +22,17 @@ The architecture consists of three main components:
 
 In heavy industrial processes like steel hot rolling, deterministic physics formulas are used to predict the exact force required to deform a slab. However, these pure physics models fail over time because the physical rollers experience ongoing mechanical wear. As the machinery degrades, the actual force required drifts away from the theoretical physics prediction—a classic real-world example of **Concept Drift**.
 
-By deploying an **Online Machine Learning model**—which trains continuously on a never-ending stream of new slab events rather than relying on static offline batches—the system learns the _new_ physical reality of the worn machinery on the fly. This actively bridges the gap between theoretical physics and degraded mechanical reality.
+By deploying an **Online Machine Learning model**, which trains continuously on a never-ending stream of new slab events rather than relying on static offline batches, the system learns the _new_ physical reality of the worn machinery on the fly. This actively bridges the gap between theoretical physics and degraded mechanical reality.
 
-To solve this and continuously quantify our success, the Flink pipeline executes three online learning algorithms simultaneously. **AMRules** acts as our primary production model, while the other two serve as real-time baselines to mathematically prove the value of the advanced algorithm on our dashboard:
+<p align="center">
+  <img src="./images/drift-convergence-lifecycle.png" alt="Drift and Convergence Lifecycle" />
+</p>
+
+To solve this and continuously quantify our success, the Flink pipeline executes three online learning algorithms simultaneously. **AMRules** acts as our primary production model, while the other two serve as baselines for comparison:
 
 ### AMRules (Adaptive Model Rules)
 
-Serving as the primary engine of the Shadow Mode Router, AMRules is a state-of-the-art streaming rule learning algorithm built specifically for regression problems. Because industrial data streams are constantly evolving, AMRules relies on incremental learning to adapt to changes using minimal computational overhead.
+Serving as the primary engine of the Shadow Mode Router, [AMRules](https://scispace.com/pdf/adaptive-model-rules-from-data-streams-1l7ti6t60h.pdf) is a state-of-the-art streaming rule learning algorithm built specifically for regression problems. Because industrial data streams are constantly evolving, AMRules relies on incremental learning to adapt to changes using minimal computational overhead.
 
 It builds an ensemble of rules where the antecedent (the "IF" condition) filters based on a slab's physical attributes, and the consequent (the "THEN" outcome) calculates a linear combination of those attributes to minimize the target's mean squared error. The linear models within these rules are continuously trained using incremental gradient descent, updating weights via the Delta rule: $w_{i}\leftarrow w_{i}+\eta(\hat{y}-y)x_{i}$.
 
@@ -41,7 +45,7 @@ Crucially, to handle abrupt mechanical shocks, every single rule in AMRules is e
 **SGD (Stochastic Gradient Descent):** A lightweight, continuous linear regressor. Unlike offline batch models, this SGD tracks streaming weights and biases, updating itself incrementally on every single slab using standard scaled inputs (Z-Scores). It adjusts its weights based on the continuous residual error, allowing it to map linear multivariate drift, but it fails to rapidly capture abrupt, non-linear physical shocks.
 
 <details>
-  <summary>Click to see data dictionary</summary>
+  <summary><strong>Click to see data dictionary</strong></summary>
 
 ### Identifiers (Metadata)
 
@@ -107,10 +111,6 @@ The Flink pipeline evaluates multiple models simultaneously and calculates the A
 </details>
 
 <br/>
-
-<p align="center">
-  <img src="./images/drift-convergence-lifecycle.png" alt="Drift and Convergence Lifecycle" />
-</p>
 
 ---
 
