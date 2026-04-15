@@ -40,6 +40,7 @@ class MoaEvaluationProcessFunction(
     private val overpressTolerance: Double,
     private val underpressTolerance: Double,
     private val smoothingFactor: Double,
+    private val trustDeficitTolerance: Double,
 ) : KeyedProcessFunction<String, MatchedEvent, MoaEvaluationResult>() {
     @Transient
     private lateinit var logger: Logger
@@ -174,7 +175,7 @@ class MoaEvaluationProcessFunction(
         val isPhysicallyUnsafe = amRulesResidual > maxSafeOverpress || amRulesResidual < -maxSafeUnderpress
 
         // Check B: Trust Deficit (Is the AI currently performing worse than pure physics)
-        val isUntrusted = recentAmRulesApe > (recentBaselineApe + 1.0)
+        val isUntrusted = recentAmRulesApe > (recentBaselineApe + trustDeficitTolerance)
 
         // The Routing Decision
         val isFallbackTriggered = isPhysicallyUnsafe || isUntrusted

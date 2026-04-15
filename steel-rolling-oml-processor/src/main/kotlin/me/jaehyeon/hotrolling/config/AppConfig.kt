@@ -41,6 +41,13 @@ data class AppConfig(
      * to recent performance.
      */
     val smoothingFactor: Double = 0.2,
+    /**
+     * The maximum acceptable performance deficit between the AMRules model and the Physics baseline.
+     * Defined in percentage points. If the model's EWMA Absolute Percentage Error (APE) exceeds
+     * the baseline's EWMA APE by more than this threshold (e.g., 3.0%), the Shadow Mode Router
+     * flags the model as untrusted and safely falls back to the physics prediction.
+     */
+    val trustDeficitTolerance: Double = 3.0,
     // Kafka Configuration
     /**
      * The address of the Kafka bootstrap server.

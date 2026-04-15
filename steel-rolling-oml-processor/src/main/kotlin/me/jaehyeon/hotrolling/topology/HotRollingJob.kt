@@ -62,6 +62,7 @@ object HotRollingJob {
                         overpressTolerance = config.overpressTolerance,
                         underpressTolerance = config.underpressTolerance,
                         smoothingFactor = config.smoothingFactor,
+                        trustDeficitTolerance = config.trustDeficitTolerance,
                     ),
                 ).name("OML-Evaluation-And-Training")
 
