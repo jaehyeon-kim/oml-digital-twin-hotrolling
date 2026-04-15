@@ -187,15 +187,109 @@ Crucially, when the model is rejected, it is not turned off. It continues to pro
 
 ## 🚀 Getting Started
 
-_(Placeholder: Instructions for running the application)_
+Follow these steps to run the complete Digital Twin, Kafka, Flink, and Dashboard pipeline locally on your machine.
+
+### Prerequisites
+
+- **Docker & Docker Compose**
+- **Java JDK 11** (Required to build the Flink application)
+- **Python 3.10+** (Required for the Digital Twin and Dashboard)
+- **Factor House Community License:** [See instructions here](https://github.com/factorhouse/factorhouse-local?tab=readme-ov-file#update-kpow-and-flex-licenses) to obtain your free license file.
+
+---
+
+### Step 1: Preparation
+
+First, clone the [Factor House Local](https://github.com/factorhouse/factorhouse-local) repository, and optionally download the necessary connector dependencies. Then, build the Flink application.
 
 ```bash
-# Example Placeholder
-docker-compose up -d
+# Clone the Factor House Local Infrastructure
+git clone git@github.com:factorhouse/factorhouse-local.git
+
+# (Optional) Download Kafka connect, Flink connector jars ...
+./factorhouse-local/resources/setup-env.sh
+
+# Build the Flink application (Shadow JAR)
+cd steel-rolling-oml-processor
+./gradlew shadowJar
+cd ..
+```
+
+### Step 2: Start Environment
+
+Export your Kpow/Flex license variables and spin up the infrastructure using Docker Compose. If you are using the Community editions of Kpow and Flex, you only need a single license file.
+
+This step deploys the following stack:
+
+- **Kafka (`compose-kpow.yml`):** A 3-node Kafka cluster, Kafka Connect, Schema Registry, and Kpow. Kpow is used for managing Kafka and is available at [http://localhost:3000](https://www.google.com/search?q=http://localhost:3000).
+- **Flink (`compose-flex.yml`):** A Flink cluster with a single JobManager and three TaskManagers, alongside Flex. Flex is used for managing Flink and is available at [http://localhost:3001](https://www.google.com/search?q=http://localhost:3001).
+- **ClickHouse (`compose-store.yml`):** The OLAP database sink, exposed at [http://localhost:8123](https://www.google.com/search?q=http://localhost:8123). _(Database: `dev` | Username: `default`)_.
+
+<!-- end list -->
+
+```bash
+# Export edition and license variables (Community Edition)
+export KPOW_SUFFIX="-ce"
+export FLEX_SUFFIX="-ce"
+export KPOW_LICENSE=~/.license/community/license.env
+export FLEX_LICENSE=~/.license/community/license.env
+
+# Spin up Kafka, Flink, and ClickHouse via Docker Compose
+docker compose -p kpow -f ./factorhouse-local/compose-kpow.yml up -d \
+  && docker compose -p flex -f ./factorhouse-local/compose-flex.yml up -d \
+  && docker compose -p store --profile clickhouse -f ./factorhouse-local/compose-store.yml up -d
+```
+
+### Step 3: Start Simulation
+
+Set up your Python environment and start the Digital Twin generator. This will immediately begin simulating the steel rolling process and publishing events to Kafka.
+
+```bash
+# Set up a virtual environment and install dependencies
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python src/generator.py
+
+# Start the Data Generator (Digital Twin)
+python sim_control/generator.py
+```
+
+### Step 4: Deploy Flink App
+
+With data flowing into Kafka, deploy the compiled Flink pipeline to the JobManager to start the Online Machine Learning processing.
+
+```bash
+# Copy the compiled JAR into the Flink JobManager container
+docker cp steel-rolling-oml-processor/build/libs/steel-rolling-oml-processor-1.0.jar \
+  jobmanager:/tmp/steel-rolling-oml-processor-1.0.jar
+
+# Submit the job to the Flink cluster (Detached mode)
+# Parallelism is set to 3 to perfectly match the 3 partitions in the Kafka topics.
+docker exec jobmanager /opt/flink/bin/flink run -d -p 3 \
+  /tmp/steel-rolling-oml-processor-1.0.jar
+```
+
+### Step 5: Start Control Plane
+
+Finally, open a **new terminal**, reactivate your virtual environment, and launch the UI Dashboard to monitor the metrics and inject mechanical wear into the simulation. It will be available at [http://localhost:8080](https://www.google.com/search?q=http://localhost:8080).
+
+```bash
+source venv/bin/activate
+python sim_control/dashboard.py
+```
+
+### Step 6: Tear Down Environment
+
+When you are finished, you can stop the foreground Python dashboard by hitting `Ctrl + C`.
+
+Then, clean up the Docker containers and unset your environment variables:
+
+```bash
+docker compose -p store --profile clickhouse -f ./factorhouse-local/compose-store.yml down \
+  && docker compose -p flex -f ./factorhouse-local/compose-flex.yml down \
+  && docker compose -p kpow -f ./factorhouse-local/compose-kpow.yml down
+
+unset KPOW_SUFFIX FLEX_SUFFIX KPOW_LICENSE FLEX_LICENSE
 ```
 
 ---
