@@ -208,11 +208,11 @@ Crucially, when the model is rejected, it is not turned off. It continues to pro
 
 ## ⏱️ Throughput & Latency
 
-_This pipeline is designed to operate at real-time industrial speeds._
+_This pipeline is designed to operate continuously, smoothly handling the asynchronous nature of factory floor sensor data._
 
-- **Event Generation Rate:** [PLACEHOLDER - e.g., 50 slabs generated per second]
-- **Ground Truth Delay:** [PLACEHOLDER - e.g., 5 seconds between prediction and actuals]
-- **Flink Processing Latency:** [PLACEHOLDER - e.g., Streams matched and MOA models trained in \< 5ms per event]
+- **Event Generation Rate (~2.4 Slabs/sec):** The Python Digital Twin simulates the factory at an accelerated continuous rate, writing roughly 2.4 prediction requests (`mill-predictions`) and 2.4 delayed actuals (`mill-groundtruth`) to Kafka every second.
+- **Stream Alignment & Physical Delay:** The Flink consumer group maintains an exceptionally healthy, low lag (averaging ~26 messages). This small buffer perfectly absorbs the simulated physical time delay, representing the seconds it takes for a slab of steel to physically travel through the rolling mill before the ground-truth sensors record the final force.
+- **Processing Throughput:** Flink continuously consumes the aligned streams at ~4.3 reads/second, successfully matching the asynchronous events, executing the MOA prequential training loop, and sinking the metrics to ClickHouse in near real-time with zero backpressure.
 
 ---
 
@@ -244,6 +244,10 @@ git clone git@github.com:factorhouse/factorhouse-local.git
 cd steel-rolling-oml-processor
 ./gradlew shadowJar
 cd ..
+
+# Verify the Flink JAR file
+ls steel-rolling-oml-processor/build/libs/
+# Expected: steel-rolling-oml-processor-1.0.jar
 ```
 
 ### Step 2: Start Environment
@@ -252,9 +256,9 @@ Export your Kpow/Flex license variables and spin up the infrastructure using Doc
 
 This step deploys the following stack:
 
-- **Kafka (`compose-kpow.yml`):** A 3-node Kafka cluster, Kafka Connect, Schema Registry, and Kpow. Kpow is used for managing Kafka and is available at [http://localhost:3000](https://www.google.com/search?q=http://localhost:3000).
-- **Flink (`compose-flex.yml`):** A Flink cluster with a single JobManager and three TaskManagers, alongside Flex. Flex is used for managing Flink and is available at [http://localhost:3001](https://www.google.com/search?q=http://localhost:3001).
-- **ClickHouse (`compose-store.yml`):** The OLAP database sink, exposed at [http://localhost:8123](https://www.google.com/search?q=http://localhost:8123). _(Database: `dev` | Username: `default`)_.
+- **Kafka (`compose-kpow.yml`):** A 3-node Kafka cluster, Kafka Connect, Schema Registry, and Kpow. Kpow is used for managing Kafka and is available at [http://localhost:3000](http://localhost:3000).
+- **Flink (`compose-flex.yml`):** A Flink cluster with a single JobManager and three TaskManagers, alongside Flex. Flex is used for managing Flink and is available at [http://localhost:3001](http://localhost:3001).
+- **ClickHouse (`compose-store.yml`):** The OLAP database sink, exposed at [http://localhost:8123](http://localhost:8123). _(Database: `dev` | Username: `default`)_.
 
 ```bash
 # Export edition and license variables (Community Edition)
@@ -300,7 +304,7 @@ docker exec jobmanager /opt/flink/bin/flink run -d -p 3 \
 
 ### Step 5: Start Control Plane
 
-Finally, open a **new terminal**, reactivate your virtual environment, and launch the UI Dashboard to monitor the metrics and inject mechanical wear into the simulation. It will be available at [http://localhost:8080](https://www.google.com/search?q=http://localhost:8080).
+Finally, open a **new terminal**, reactivate your virtual environment, and launch the NiceGUI Dashboard to monitor the metrics and inject mechanical wear into the simulation. It will be available at [http://localhost:8080](http://localhost:8080).
 
 ```bash
 source venv/bin/activate
@@ -327,26 +331,49 @@ unset KPOW_SUFFIX FLEX_SUFFIX KPOW_LICENSE FLEX_LICENSE
 
 Using the Python/ECharts Dashboard, you can actively manipulate the physical state of the Digital Twin to observe the Flink pipeline's reaction in real-time.
 
+_(Note: While the baseline models (Target Mean and SGD) are not visualized in the GIFs below, their continuous evaluation metrics are tracked under the hood and described in the observations.)_
+
 ### Scenario A: Abrupt Drift (Mechanical Shock)
 
 Simulates a sudden mechanical failure (e.g., a roller bearing breaking), instantly altering the physics of the mill.
 
-- **How to simulate:** Click the `Trigger Abrupt Shock` button in the UI.
-- **Observation:** The physics baseline error instantly spikes. The ML model spikes alongside it, but rapidly steps down and converges back to \<3% error as it learns the new broken state.
+- **Simulation Settings:** Trigger Abrupt Shock (Wear Level: 60.0).
+- **Observation:** The pure physics baseline error instantly spikes and remains high (often \>10% APE) because the physical reality no longer matches the math. The primary **AMRules** model initially spikes alongside it, but its Page-Hinkley change detector immediately drops obsolete rules, allowing it to rapidly converge back to \<3% error as it learns the new broken state.
+- **Baseline Models:** **Target Mean** and **SGD** struggle significantly with the non-linear shock, experiencing massive error spikes (exceeding 35-40% APE) before slowly stabilizing. They lack the rule-pruning agility of AMRules.
+
+<p align="center">
+  <img src="./images/abrupt-drift.gif"
+       alt="Abrupt Drift" 
+       style="border-radius: 2%;" />
+</p>
 
 ### Scenario B: Gradual Drift (Standard Wear)
 
 Simulates the standard, slow degradation of the rollers grinding against red-hot steel over hours of production.
 
-- **How to simulate:** Slowly increase the `Gradual Wear` slider in the UI.
-- **Observation:** The physics baseline error slowly creeps upward over time. The ML model tracks the changing reality smoothly, preventing the creeping error from affecting production.
+- **Simulation Settings:** Gradual Wear (Base Wear Level: 5.0, Frequency: 30 seconds).
+- **Observation:** The physics baseline error slowly and persistently creeps upward over time (e.g. ranging from 2% to 7% APE) as the wear accumulates. The **AMRules** model gracefully tracks this changing reality, updating its linear weights incrementally to maintain a smooth error rate typically under 2%.
+- **Baseline Models:** **SGD** maps the linear drift decently but experiences occasional lag, while the **Target Mean** (EWMA) struggles with periodic volatility (spiking up to 20-30% APE) as it over-corrects for the accumulating drift.
+
+<p align="center">
+  <img src="./images/gradual-drift.gif"
+       alt="Gradual Drift" 
+       style="border-radius: 2%;" />
+</p>
 
 ### Scenario C: No Drift (Baseline / Reset)
 
 Simulates a pristine factory state, such as immediately after a maintenance shift replaces the rollers.
 
-- **How to simulate:** Click `Reset Mill` or set Wear to 0%.
-- **Observation:** Both the physics baseline and the ML model maintain a highly accurate, stable APE.
+- **Simulation Settings:** Reset Mill (Wear Level: 0.0).
+- **Observation:** The physical reality of the factory floor perfectly aligns with the deterministic mathematical formulas. The physics baseline maintains a highly accurate, near-zero error rate (\< 0.3% APE).
+- **Baseline Models:** **AMRules**, **Target Mean**, and **SGD** all remain perfectly stable. They recognize that there is no residual error to correct, maintaining precision without introducing unnecessary predictive noise.
+
+<p align="center">
+  <img src="./images/no-drift.gif"
+       alt="No Drift" 
+       style="border-radius: 2%;" />
+</p>
 
 ---
 
