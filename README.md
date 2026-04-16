@@ -2,33 +2,50 @@
 
 A real-time, fault-tolerant Online Machine Learning pipeline and Digital Twin for industrial Hot Strip Mill steel processing.
 
-This system demonstrates how streaming architectures (Apache Flink + Kafka) can be combined with Online Machine Learning (e.g. _AMRules_) to autonomously correct for physical **Concept Drift** (mechanical wear) in heavy industrial machinery, all while operating safely behind a deterministic **Shadow Mode Router**.
+This system demonstrates how streaming architectures can be combined with Online Machine Learning to autonomously correct for physical **Concept Drift** (mechanical wear) in heavy industrial machinery, all while operating safely behind a deterministic **Shadow Mode Router**.
+
+## 🛠️ Tech Stack
+
+- **Apache Flink:** Distributed stream processing engine.
+- **Kotlin:** Primary language for the Flink streaming application.
+- **Apache Kafka:** Event message broker and streaming backbone.
+- **ClickHouse:** Real-time OLAP database for dashboard metrics.
+- **MOA (Massive Online Analysis):** An open-source Java framework for data stream mining, powering the core ML algorithms.
+- **Python / NiceGUI / ECharts:** Powers the Digital Twin simulation and the interactive control plane dashboard.
+
+---
 
 ## 🏗️ High-Level System Architecture
 
 The architecture consists of three main components:
 
-1. **Digital Twin Simulation (Python):** Simulates the physical steel rolling process, applying simulated mechanical wear and sensor noise to generate realistic factory data.
-2. **Message Broker (Kafka):** Handles the asynchronous, high-throughput streaming. It acts as the central nervous system for prediction requests, delayed ground-truth target forces, and incoming simulation control variables (e.g., wear level updates) from the **Digital Twin Control Plane**.
-3. **Stream Processor (Flink):** The brain of the system. It aligns streams, trains the Online ML model dynamically, evaluates safety guardrails, and routes the final prediction.
+1.  **Digital Twin Simulation (Python):** Simulates the physical steel rolling process, applying simulated mechanical wear and sensor noise to generate realistic factory data.
+2.  **Message Broker (Kafka):** Handles the asynchronous, high-throughput streaming. It acts as the central nervous system for prediction requests, delayed ground-truth target forces, and incoming simulation control variables (e.g., wear level updates) from the **Digital Twin Control Plane**.
+3.  **Stream Processor (Flink):** The brain of the system. It aligns streams, trains the Online ML model dynamically, evaluates safety guardrails, and routes the final prediction.
 
 <p align="center">
-  <img src="./images/high-level-architecture.png" alt="High-Level System Architecture" />
+  <img src="./images/high-level-architecture.png" 
+       alt="High-Level System Architecture"
+       style="border-radius: 2%;" />
 </p>
 
 ---
 
-## 📉 Problem: Mechanical Wear & Concept Drift
+## 📉 Concept Drift & Online Residual Learning
 
 In heavy industrial processes like steel hot rolling, deterministic physics formulas are used to predict the exact force required to deform a slab. However, these pure physics models fail over time because the physical rollers experience ongoing mechanical wear. As the machinery degrades, the actual force required drifts away from the theoretical physics prediction—a classic real-world example of **Concept Drift**.
 
-By deploying an **Online Machine Learning model**, which trains continuously on a never-ending stream of new slab events rather than relying on static offline batches, the system learns the _new_ physical reality of the worn machinery on the fly. This actively bridges the gap between theoretical physics and degraded mechanical reality.
+To solve this, the system deploys an **Online Machine Learning model** that learns the _new_ physical reality of the worn machinery on the fly. Crucially, the ML models do not predict the absolute rolling force from scratch. Instead, they utilize **Residual Learning**, predicting the residual error (the difference between the theoretical formula and the actual physical force). Thus, the final prediction routed to the factory floor is:
+
+`Final Force = Physics Baseline + ML Residual Prediction`
 
 <p align="center">
-  <img src="./images/drift-convergence-lifecycle.png" alt="Drift and Convergence Lifecycle" />
+  <img src="./images/drift-convergence-lifecycle.png"
+       alt="Drift and Convergence Lifecycle"
+       style="border-radius: 2%;" />
 </p>
 
-To solve this and continuously quantify our success, the Flink pipeline executes three online learning algorithms simultaneously. **AMRules** acts as our primary production model, while the other two serve as baselines for comparison:
+To continuously evaluate model performance, the Flink pipeline integrates the **Massive Online Analysis (MOA)** framework to execute three online learning algorithms simultaneously. **AMRules** acts as our primary production model, while the other two serve as baselines for comparison:
 
 ### AMRules (Adaptive Model Rules)
 
@@ -110,8 +127,6 @@ The Flink pipeline evaluates multiple models simultaneously and calculates the A
 
 </details>
 
-<br/>
-
 ---
 
 ## 🏭 Data Generation: Digital Twin
@@ -126,7 +141,9 @@ The digital twin is broken down into specific operational engines that map exact
 - **Steel Hot Rolling Lifecycle Simulation:** The core orchestrator. It combines the slab features with the current wear level, asks the physics engine for the final force, and handles the asynchronous streaming. Crucially, it separates the outputs: first publishing a **Prediction Request** to Kafka, and later emitting the **Delayed Ground Truth** to simulate the physical delay of factory sensors.
 
 <p align="center">
-  <img src="./images/digital-twin-simulation.png" alt="Digital Twin Simulation Architecture" />
+  <img src="./images/digital-twin-simulation.png"
+       alt="Digital Twin Simulation Architecture"
+       style="border-radius: 2%;" />
 </p>
 
 ---
@@ -151,14 +168,16 @@ The topology executes this through a precise Directed Acyclic Graph (DAG):
    - **Save State:** Flushes the newly trained model back into Flink's managed state memory.
 
 4. **Fault Tolerance & Custom MOA Checkpointing:**
-   Because the ML models live entirely in memory during processing, Flink must asynchronously checkpoint this state to a durable State Backend (e.g., RocksDB) to prevent data loss.
+   Because the ML models live entirely in memory during processing, they must be durably persisted to a State Backend (e.g., RocksDB) to prevent data loss. Flink achieves this through periodic, asynchronous distributed snapshots (checkpoints).
 
-   However, MOA (`AmRules`) models contain deeply complex, dynamic tree structures that often break Flink's default Kryo serializers. To solve this, the operator manually serializes the MOA models into raw byte arrays (`ByteArrayState`) using Java's native `ObjectOutputStream` before saving. If a Flink node fails, the system safely deserializes these bytes and instantly restores the exact brain-state of the ML models from the last checkpoint.
+   However, MOA (`AMRules`) models contain deeply complex, dynamic tree structures that often break Flink's default Kryo serializers during these snapshots. To solve this, the operator interacts with the MOA model as a standard Java object in memory for high-performance execution, but manually serializes it into a raw byte array (`ValueState<byte[]>`) upon every state update. When Flink's checkpoint coordinator triggers a snapshot barrier, it completely bypasses the complex object graph traversal and simply flushes these pre-serialized byte arrays directly to RocksDB. If a node fails, the system safely deserializes these bytes from the checkpoint, instantly restoring the exact computational brain-state of the ML models.
 
 5. **ClickHouse Sink:** The final metrics are streamed into an OLAP database (ClickHouse) to power the real-time evaluation dashboard.
 
 <p align="center">
-  <img src="./images/stream-processing-flink.png" alt="Flink Application DAG" />
+  <img src="./images/stream-processing-flink.png"
+       alt="Flink Application DAG" 
+       style="border-radius: 2%;" />
 </p>
 
 ---
@@ -180,8 +199,20 @@ To mitigate this, the Flink pipeline implements a deterministic **Shadow Mode Ro
 Crucially, when the model is rejected, it is not turned off. It continues to process the data stream and train in the background (**Shadow Mode**). Once it learns the new physical reality of the factory and its EWMA Trust Score improves, the router automatically approves it to take control again.
 
 <p align="center">
-  <img src="./images/shadow-mode-router.png" alt="Shadow Mode Router Decision Logic" />
+  <img src="./images/shadow-mode-router.png"
+       alt="Shadow Mode Router Decision Logic" 
+       style="border-radius: 2%;" />
 </p>
+
+---
+
+## ⏱️ Throughput & Latency
+
+_This pipeline is designed to operate at real-time industrial speeds._
+
+- **Event Generation Rate:** [PLACEHOLDER - e.g., 50 slabs generated per second]
+- **Ground Truth Delay:** [PLACEHOLDER - e.g., 5 seconds between prediction and actuals]
+- **Flink Processing Latency:** [PLACEHOLDER - e.g., Streams matched and MOA models trained in \< 5ms per event]
 
 ---
 
@@ -224,8 +255,6 @@ This step deploys the following stack:
 - **Kafka (`compose-kpow.yml`):** A 3-node Kafka cluster, Kafka Connect, Schema Registry, and Kpow. Kpow is used for managing Kafka and is available at [http://localhost:3000](https://www.google.com/search?q=http://localhost:3000).
 - **Flink (`compose-flex.yml`):** A Flink cluster with a single JobManager and three TaskManagers, alongside Flex. Flex is used for managing Flink and is available at [http://localhost:3001](https://www.google.com/search?q=http://localhost:3001).
 - **ClickHouse (`compose-store.yml`):** The OLAP database sink, exposed at [http://localhost:8123](https://www.google.com/search?q=http://localhost:8123). _(Database: `dev` | Username: `default`)_.
-
-<!-- end list -->
 
 ```bash
 # Export edition and license variables (Community Edition)
@@ -318,6 +347,15 @@ Simulates a pristine factory state, such as immediately after a maintenance shif
 
 - **How to simulate:** Click `Reset Mill` or set Wear to 0%.
 - **Observation:** Both the physics baseline and the ML model maintain a highly accurate, stable APE.
+
+---
+
+## 📚 References
+
+- Almeida, E., Ferreira, C., & Gama, J. (2013). **Adaptive Model Rules from Data Streams**. _Machine Learning and Knowledge Discovery in Databases._
+- Bifet, A., Holmes, G., Kirkby, R., & Pfahringer, B. (2010). **MOA: Massive Online Analysis**. _Journal of Machine Learning Research (JMLR)._
+- Thakur, S. K., Das, A. K., & Jha, B. K. (2023). **Application of machine learning methods for the prediction of roll force and torque during plate rolling of micro-alloyed steel**. _Journal of Alloys and Metallurgical Systems, 4_, 100044.
+- Kim, J. (2026). **Dynamic DES**: A Python package for Dynamic Discrete Event Simulation.
 
 ---
 
