@@ -7,7 +7,7 @@ This system demonstrates how streaming architectures can be combined with Online
 ## 🛠️ Tech Stack
 
 - **Apache Flink:** Distributed stream processing engine.
-- **Kotlin:** Primary language for the Flink streaming application.
+- **Kotlin:** Programming language used to build the Flink streaming application.
 - **Apache Kafka:** Event message broker and streaming backbone.
 - **ClickHouse:** Real-time OLAP database for dashboard metrics.
 - **MOA (Massive Online Analysis):** An open-source Java framework for data stream mining, powering the core ML algorithms.
@@ -19,7 +19,7 @@ This system demonstrates how streaming architectures can be combined with Online
 
 The architecture consists of three main components:
 
-1.  **Digital Twin Simulation (Python):** Simulates the physical steel rolling process, applying simulated mechanical wear and sensor noise to generate realistic factory data.
+1.  **Digital Twin Simulation (Python):** Using the [Dynamic DES](https://github.com/jaehyeon-kim/dynamic-des) package, it simulates the physical steel rolling process, applying simulated mechanical wear and sensor noise to generate realistic factory data.
 2.  **Message Broker (Kafka):** Handles the asynchronous, high-throughput streaming. It acts as the central nervous system for prediction requests, delayed ground-truth target forces, and incoming simulation control variables (e.g., wear level updates) from the **Digital Twin Control Plane**.
 3.  **Stream Processor (Flink):** The brain of the system. It aligns streams, trains the Online ML model dynamically, evaluates safety guardrails, and routes the final prediction.
 
@@ -33,7 +33,7 @@ The architecture consists of three main components:
 
 ## 📉 Concept Drift & Online Residual Learning
 
-In heavy industrial processes like steel hot rolling, deterministic physics formulas are used to predict the exact force required to deform a slab. However, these pure physics models fail over time because the physical rollers experience ongoing mechanical wear. As the machinery degrades, the actual force required drifts away from the theoretical physics prediction—a classic real-world example of **Concept Drift**.
+In heavy industrial processes like steel hot rolling, deterministic physics formulas are used to predict the exact force required to deform a slab. However, these pure physics models fail over time because the physical rollers experience ongoing mechanical wear. As the machinery degrades, the actual force required drifts away from the theoretical physics prediction, a classic real-world example of **Concept Drift**.
 
 To solve this, the system deploys an **Online Machine Learning model** that learns the _new_ physical reality of the worn machinery on the fly. Crucially, the ML models do not predict the absolute rolling force from scratch. Instead, they utilize **Residual Learning**, predicting the residual error (the difference between the theoretical formula and the actual physical force). Thus, the final prediction routed to the factory floor is:
 
@@ -75,7 +75,7 @@ These are used for routing, joining streams (Event A and B), and dashboard track
 
 ### Raw Features (From Machine Sensors & Plant DB)
 
-These are the exact 13 base parameters derived from Table 2 of the [reference paper](https://www.sciencedirect.com/science/article/pii/S2949917823000445).
+These are the exact 13 base parameters derived from Table 2 of [Thakur, S. K., et al. (2023)](https://www.sciencedirect.com/science/article/pii/S2949917823000445).
 
 - **`reheating_time_min`** (Float): Time the slab spent in the furnace.
 - **`roll_diameter_mm`** (Float): Physical diameter of the work rolls.
@@ -131,9 +131,9 @@ The Flink pipeline evaluates multiple models simultaneously and calculates the A
 
 ## 🏭 Data Generation: Digital Twin
 
-To safely simulate this continuous industrial process, the Python-based Digital Twin utilizes the [Dynamic DES](https://github.com/jaehyeon-kim/dynamic-des) package to orchestrate a real-time, time-stepped simulation loop.
+To safely simulate this continuous industrial process, the Python-based Digital Twin utilizes the [Dynamic DES](https://github.com/jaehyeon-kim/dynamic-des) package to orchestrate a real-time simulation.
 
-The digital twin is broken down into specific operational engines that map exactly to a physical factory floor:
+It is broken down into specific operational engines that map exactly to a physical factory floor:
 
 - **Digital Twin Control Plane & Roll Drift Engine:** Operators use the web dashboard to manually inject mechanical wear or maintenance resets into the `sim-controls` Kafka topic. The internal **Roll Drift Engine** actively consumes these variables and updates the mill's condition, creating realistic **Concept Drift** on the fly.
 - **Slab State Simulation:** Generates and tracks the physical transformation of the steel. As a slab moves through the virtual mill, this engine updates its core metallurgical properties (e.g., temperature drops, thickness reduction).
@@ -154,7 +154,9 @@ Industrial data streams are inherently asynchronous. Because the factory floor r
 
 The topology executes this through a precise Directed Acyclic Graph (DAG):
 
-1. **Stream Alignment (`CoProcessFunction`):** The pipeline buffers incoming prediction requests in memory. It waits for the corresponding delayed ground-truth event to arrive from the factory sensors, joining them together into a unified `MatchedEvent` payload.
+1. **Stream Alignment & Latency Handling (`CoProcessFunction`):** The pipeline buffers incoming prediction requests in memory, waiting for the corresponding delayed ground-truth event from the factory sensors to arrive before joining them into a unified `MatchedEvent` payload.
+   - **Synchronous Joining for Short Latency:** Because the physical delay between requesting a prediction and measuring the actual force is only a few seconds in a hot strip mill, Flink can safely buffer this short window. This enables a synchronized Test-then-Train evaluation and emits a clean, unified metric row to the dashboard.
+   - **Adapting for High Latency:** If this were a process where ground truth took long to arrive (e.g., a physical metallurgy lab test), a synchronous join would block production. In that scenario, the architecture would decouple inference and training by immediately serving the prediction and saving the features into a long-TTL Flink state, then asynchronously training the model later when the ground truth finally streams in.
 
 2. **Partitioning (`KeyBy` Steel Grade):** The unified stream is keyed by metallurgy type. This ensures that a separate, isolated Machine Learning model is maintained for every single steel grade. This strict state isolation prevents **catastrophic forgetting**, ensuring the model doesn't "forget" how to roll soft steel just because it spent the last three hours rolling high-carbon steel.
 
@@ -170,7 +172,34 @@ The topology executes this through a precise Directed Acyclic Graph (DAG):
 4. **Fault Tolerance & Custom MOA Checkpointing:**
    Because the ML models live entirely in memory during processing, they must be durably persisted to a State Backend (e.g., RocksDB) to prevent data loss. Flink achieves this through periodic, asynchronous distributed snapshots (checkpoints).
 
-   However, MOA (`AMRules`) models contain deeply complex, dynamic tree structures that often break Flink's default Kryo serializers during these snapshots. To solve this, the operator interacts with the MOA model as a standard Java object in memory for high-performance execution, but manually serializes it into a raw byte array (`ValueState<byte[]>`) upon every state update. When Flink's checkpoint coordinator triggers a snapshot barrier, it completely bypasses the complex object graph traversal and simply flushes these pre-serialized byte arrays directly to RocksDB. If a node fails, the system safely deserializes these bytes from the checkpoint, instantly restoring the exact computational brain-state of the ML models.
+   MOA (`AMRules`) models, however, contain deeply complex, dynamic tree structures that often break Flink's default Kryo serializers during these snapshots. To solve this, the operator interacts with the MOA model as a standard Java object in memory for high-performance execution, but manually serializes it into a raw byte array (`ValueState<byte[]>`) upon every state update. When Flink's checkpoint coordinator triggers a snapshot barrier, it completely bypasses the complex object graph traversal and simply flushes these pre-serialized byte arrays directly to RocksDB. If a node fails, the system safely deserializes these bytes from the checkpoint, instantly restoring the exact computational brain-state of the ML models.
+
+    <details>
+      <summary><strong>Deep Dive: Serialization Performance Trade-off</strong></summary>
+
+   <br/>
+   Serializing a complex machine learning model into a byte array on every single event introduces a deliberate architectural trade-off between throughput and state safety.
+
+   <br/>
+
+   **Micro vs. Macro Latency**
+
+   If we waited for Flink to trigger a checkpoint before serializing the model (for example, using the `snapshotState()` method), Flink would halt processing to traverse the massive MOA object graph. This creates a severe "Stop-The-World" pause on the main thread. In industrial control systems, a massive latency spike can cause hydraulic actuators to miss their physical timing windows. By pre-serializing the model into a simple byte array during normal processing, we pay a tiny micro-latency tax on every event, but we guarantee that the asynchronous checkpointing phase is lightning fast and never times out.
+
+   **Throughput Limits and the Garbage Collection Wall**
+
+   The cost of this stability is raw throughput. Continuously generating megabytes of raw byte arrays heavily taxes the Java Virtual Machine Garbage Collector. Sustained throughput on a single CPU core is effectively hard-capped around 100 to 200 records per second before Garbage Collection thrashing freezes the pipeline. However, the reality of industrial physics provides a safety net here. Even in a massive facility operating dozens of rolling machines simultaneously, the physical constraints of moving heavy steel keep the data velocity manageable. A single production line processes only a handful of slabs per second. Because Flink partitions the data streams by machine or product line, the load is distributed horizontally. Each parallel Flink worker operates well below its performance ceiling, making this approach extremely safe and stable for heavy manufacturing.
+
+   **Scaling to High-Frequency Throughput (50,000+ RPS)**
+
+   If this exact pipeline were ported to an Ad-Tech or High-Frequency Trading environment processing hundreds of thousands of events per second, this serialization approach would instantly fail. To achieve that scale, the architecture would require advanced Flink optimizations:
+   - **State Deconstruction:** Breaking the MOA tree apart and storing individual node weights in Flink's native `MapState` to enable incremental RocksDB checkpoints.
+   - **Custom TypeSerializers:** Writing a bare-metal Flink serializer to pack primitive data types directly, bypassing standard Java reflection entirely.
+   - **Object Reuse:** Enabling Flink's `enableObjectReuse()` configuration to overwrite a single memory address, dropping object creation and Garbage Collection overhead down to zero.
+
+    </details>
+
+    <br/>
 
 5. **ClickHouse Sink:** The final metrics are streamed into an OLAP database (ClickHouse) to power the real-time evaluation dashboard.
 
@@ -184,7 +213,7 @@ The topology executes this through a precise Directed Acyclic Graph (DAG):
 
 ## 🛡️ Safety & Fault Tolerance: Shadow Mode Router
 
-Industrial Machine Learning cannot operate without strict safety boundaries. A model hallucinating an extreme rolling force could severely damage a multi-million-dollar rolling stand or cause a catastrophic factory bottleneck.
+Industrial Machine Learning cannot operate without strict safety boundaries. A model error that generates excessive rolling force could severely damage a multi-million-dollar rolling stand or create a major production bottleneck in the factory.
 
 To mitigate this, the Flink pipeline implements a deterministic **Shadow Mode Router**. Every prediction generated by the Online ML model must pass through two strict programmatic guardrails before it is allowed to influence the factory floor:
 
@@ -213,6 +242,17 @@ _This pipeline is designed to operate continuously, smoothly handling the asynch
 - **Event Generation Rate (~2.4 Slabs/sec):** The Python Digital Twin simulates the factory at an accelerated continuous rate, writing roughly 2.4 prediction requests (`mill-predictions`) and 2.4 delayed actuals (`mill-groundtruth`) to Kafka every second.
 - **Stream Alignment & Physical Delay:** The Flink consumer group maintains an exceptionally healthy, low lag (averaging ~26 messages). This small buffer perfectly absorbs the simulated physical time delay, representing the seconds it takes for a slab of steel to physically travel through the rolling mill before the ground-truth sensors record the final force.
 - **Processing Throughput:** Flink continuously consumes the aligned streams at ~4.3 reads/second, successfully matching the asynchronous events, executing the MOA prequential training loop, and sinking the metrics to ClickHouse in near real-time with zero backpressure.
+
+### 🎛️ Scaling the Simulation Throughput
+
+If you want to increase the simulation throughput and generate a higher volume of events, you can tweak the [`SimParameter` configuration](./sim_control/generator.py#L51) in the Digital Twin.
+
+To successfully increase the events per second (EPS) pushed to Kafka, you must adjust two operational parameters in tandem:
+
+1.  **Increase the Ingestion Load (Arrival Rates):** Increase the `rate` values inside the `arrival` dictionary. This makes the synthetic furnace eject new slabs of steel much faster (e.g., changing structural from `0.2` to `2.0`).
+2.  **Increase the Factory Throughput (Capacity or Service Times):** If you pump more steel into the mill, the virtual machines need more processing power to prevent a backlog. You must either:
+    - Increase the `current_cap` in the `resources` dictionary to simulate adding more parallel rolling lines (e.g., bumping capacity from `4` to `10`).
+    - Decrease the `mean` durations in the `service` dictionary to simulate the rollers running at much faster physical speeds.
 
 ---
 
@@ -297,7 +337,7 @@ docker cp steel-rolling-oml-processor/build/libs/steel-rolling-oml-processor-1.0
   jobmanager:/tmp/steel-rolling-oml-processor-1.0.jar
 
 # Submit the job to the Flink cluster (Detached mode)
-# Parallelism is set to 3 to perfectly match the 3 partitions in the Kafka topics.
+# Parallelism is set to 3 to match the 3 partitions in the Kafka topics.
 docker exec jobmanager /opt/flink/bin/flink run -d -p 3 \
   /tmp/steel-rolling-oml-processor-1.0.jar
 ```
@@ -327,9 +367,9 @@ unset KPOW_SUFFIX FLEX_SUFFIX KPOW_LICENSE FLEX_LICENSE
 
 ---
 
-## 🎮 Simulation Scenarios in Action
+## 🎮 Simulation Scenarios
 
-Using the Python/ECharts Dashboard, you can actively manipulate the physical state of the Digital Twin to observe the Flink pipeline's reaction in real-time.
+Using the NiceGUI Dashboard, you can actively manipulate the physical state of the Digital Twin to observe the Flink pipeline's reaction in real-time.
 
 _(Note: While the baseline models (Target Mean and SGD) are not visualized in the GIFs below, their continuous evaluation metrics are tracked under the hood and described in the observations.)_
 
@@ -338,7 +378,7 @@ _(Note: While the baseline models (Target Mean and SGD) are not visualized in th
 Simulates a sudden mechanical failure (e.g., a roller bearing breaking), instantly altering the physics of the mill.
 
 - **Simulation Settings:** Trigger Abrupt Shock (Wear Level: 60.0).
-- **Observation:** The pure physics baseline error instantly spikes and remains high (often \>10% APE) because the physical reality no longer matches the math. The primary **AMRules** model initially spikes alongside it, but its Page-Hinkley change detector immediately drops obsolete rules, allowing it to rapidly converge back to \<3% error as it learns the new broken state.
+- **Observation:** The pure physics baseline error instantly spikes and remains high (often \>10% APE) because the physical reality no longer matches the math. The primary **AMRules** model initially spikes alongside it, but its Page-Hinkley change detector immediately drops obsolete rules, allowing it to rapidly converge back to lower error as it learns the new broken state.
 - **Baseline Models:** **Target Mean** and **SGD** struggle significantly with the non-linear shock, experiencing massive error spikes (exceeding 35-40% APE) before slowly stabilizing. They lack the rule-pruning agility of AMRules.
 
 <p align="center">
@@ -349,11 +389,11 @@ Simulates a sudden mechanical failure (e.g., a roller bearing breaking), instant
 
 ### Scenario B: Gradual Drift (Standard Wear)
 
-Simulates the standard, slow degradation of the rollers grinding against red-hot steel over hours of production.
+Simulates the continuous, bi-directional cycle of slow roller degradation and subsequent maintenance recovery over hours of production.
 
-- **Simulation Settings:** Gradual Wear (Base Wear Level: 5.0, Frequency: 30 seconds).
-- **Observation:** The physics baseline error slowly and persistently creeps upward over time (e.g. ranging from 2% to 7% APE) as the wear accumulates. The **AMRules** model gracefully tracks this changing reality, updating its linear weights incrementally to maintain a smooth error rate typically under 2%.
-- **Baseline Models:** **SGD** maps the linear drift decently but experiences occasional lag, while the **Target Mean** (EWMA) struggles with periodic volatility (spiking up to 20-30% APE) as it over-corrects for the accumulating drift.
+- **Simulation Settings:** Gradual Wear (Step Size: 5.0, Frequency: 30 seconds).
+- **Observation:** The physics baseline error slowly and persistently creeps upward/download over time (e.g. ranging from 2% to 7% APE) as the wear level drifts gradually. The **AMRules** model gracefully tracks this changing reality, updating its linear weights incrementally to maintain a smooth error rate.
+- **Baseline Models:** **SGD** maps the linear drift decently but experiences occasional lag, while the **Target Mean** (EWMA) struggles with periodic volatility (spiking up to 20-30% APE) as it over-corrects for the changing drift.
 
 <p align="center">
   <img src="./images/gradual-drift.gif"
@@ -361,13 +401,13 @@ Simulates the standard, slow degradation of the rollers grinding against red-hot
        style="border-radius: 2%;" />
 </p>
 
-### Scenario C: No Drift (Baseline / Reset)
+### Scenario C: No Drift (Pristine State)
 
 Simulates a pristine factory state, such as immediately after a maintenance shift replaces the rollers.
 
-- **Simulation Settings:** Reset Mill (Wear Level: 0.0).
-- **Observation:** The physical reality of the factory floor perfectly aligns with the deterministic mathematical formulas. The physics baseline maintains a highly accurate, near-zero error rate (\< 0.3% APE).
-- **Baseline Models:** **AMRules**, **Target Mean**, and **SGD** all remain perfectly stable. They recognize that there is no residual error to correct, maintaining precision without introducing unnecessary predictive noise.
+- **Simulation Settings:** Wear Level: 0.0.
+- **Observation:** The physical reality of the factory floor perfectly aligns with the deterministic mathematical formulas. The physics baseline maintains a highly accurate, near-zero error rate (\< 0.3% APE). **AMRules** remains stable under this condition.
+- **Baseline Models:** Both **Target Mean** and **SGD** remain stable as well, which correctly identifying the absence of residual error and avoiding unnecessary adjustments or predictive noise.
 
 <p align="center">
   <img src="./images/no-drift.gif"
@@ -381,7 +421,8 @@ Simulates a pristine factory state, such as immediately after a maintenance shif
 
 - Almeida, E., Ferreira, C., & Gama, J. (2013). **Adaptive Model Rules from Data Streams**. _Machine Learning and Knowledge Discovery in Databases._
 - Bifet, A., Holmes, G., Kirkby, R., & Pfahringer, B. (2010). **MOA: Massive Online Analysis**. _Journal of Machine Learning Research (JMLR)._
-- Thakur, S. K., Das, A. K., & Jha, B. K. (2023). **Application of machine learning methods for the prediction of roll force and torque during plate rolling of micro-alloyed steel**. _Journal of Alloys and Metallurgical Systems, 4_, 100044.
+- Jung, C. (2019). **Data-Driven Optimization of Hot Rolling Processes**. _Dissertation, Technische Universität Dortmund_.
+- Thakur, S. K., et al. (2023). **Application of machine learning methods for the prediction of roll force and torque during plate rolling of micro-alloyed steel**. _Journal of Alloys and Metallurgical Systems, 4_, 100044.
 - Kim, J. (2026). **Dynamic DES**: A Python package for Dynamic Discrete Event Simulation.
 
 ---
