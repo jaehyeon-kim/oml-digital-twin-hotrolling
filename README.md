@@ -4,6 +4,22 @@ A real-time, fault-tolerant Online Machine Learning pipeline and Digital Twin fo
 
 This system demonstrates how streaming architectures can be combined with Online Machine Learning to autonomously correct for physical **Concept Drift** (mechanical wear) in heavy industrial machinery, all while operating safely behind a deterministic **Shadow Mode Router**.
 
+---
+
+## 💡 What is Hot Strip Rolling?
+
+Imagine using a rolling pin to flatten out a thick piece of dough. A Hot Strip Mill does the exact same thing, but with glowing red-hot steel slabs (often heated over 1000°C) and massive mechanical rollers. The steel is passed through a series of these rollers, crushing it down from a thick block into a long, thin sheet.
+
+Calculating the exact **Rolling Force** required to crush the steel is critical. If the machine pushes too hard, it can severely damage the rollers; if it doesn't push hard enough, the steel doesn't reach the target thickness. Because the rollers are constantly grinding against raw steel, their physical shape slowly degrades over time. As the machinery wears down, the legacy mathematical formulas used to predict that perfect force slowly become inaccurate. This physical degradation is the root of the **Concept Drift** our real-time ML pipeline is solving.
+
+<p align="center">
+  <img src="./images/hot-rolling-process.png" 
+       alt="Hot Rolling Process"
+       style="border-radius: 2%;" />
+</p>
+
+---
+
 ## 🛠️ Tech Stack
 
 - **Apache Flink:** Distributed stream processing engine.
