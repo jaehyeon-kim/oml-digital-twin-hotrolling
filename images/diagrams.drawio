@@ -1,6 +1,6 @@
 <mxfile host="65bd71144e">
     <diagram id="arch_diagram" name="System Architecture">
-        <mxGraphModel dx="1431" dy="916" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="4681" pageHeight="3300" math="0" shadow="0">
+        <mxGraphModel dx="1406" dy="645" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="4681" pageHeight="3300" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -424,7 +424,7 @@
                 <mxCell id="155" value="&lt;b&gt;processElement()&lt;/b&gt;&lt;br&gt;&lt;i&gt;[ Receives MatchedEvent ]&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#666666;sketch=1;fontSize=14;fontFamily=Comic Sans MS;" parent="1" vertex="1">
                     <mxGeometry x="2403" y="1400" width="240" height="50" as="geometry"/>
                 </mxCell>
-                <mxCell id="156" value="&lt;b&gt;2. Online Learning&lt;/b&gt;&lt;br&gt;Update Hoeffding Trees&lt;br&gt;(Train Model state)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;sketch=1;fontSize=14;fontFamily=Comic Sans MS;" parent="1" vertex="1">
+                <mxCell id="156" value="&lt;b&gt;2. Online Learning&lt;/b&gt;&lt;br&gt;Update AMRules Model&lt;br&gt;(Train Model state)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;sketch=1;fontSize=14;fontFamily=Comic Sans MS;" parent="1" vertex="1">
                     <mxGeometry x="2313" y="1490" width="190" height="80" as="geometry"/>
                 </mxCell>
                 <mxCell id="157" value="&lt;b&gt;3. Shadow Routing&lt;/b&gt;&lt;br&gt;Calculate EWMA&lt;br&gt;Trust Scores &amp;amp; APEs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;sketch=1;fontSize=14;fontFamily=Comic Sans MS;" parent="1" vertex="1">
@@ -478,16 +478,16 @@
                 <mxCell id="177" value="&lt;div style=&quot;color: rgb(63, 63, 63); scrollbar-color: rgb(226, 226, 226) rgb(251, 251, 251); font-family: &amp;quot;Comic Sans MS&amp;quot;;&quot;&gt;&lt;font style=&quot;scrollbar-color: rgb(226, 226, 226) rgb(251, 251, 251);&quot;&gt;&lt;b style=&quot;color: rgb(63, 63, 63); scrollbar-color: rgb(226, 226, 226) rgb(251, 251, 251);&quot;&gt;Fault Tolerance&lt;/b&gt;&lt;/font&gt;&lt;/div&gt;&lt;div style=&quot;color: rgb(63, 63, 63); scrollbar-color: rgb(226, 226, 226) rgb(251, 251, 251); font-family: &amp;quot;Comic Sans MS&amp;quot;;&quot;&gt;&lt;font style=&quot;scrollbar-color: rgb(226, 226, 226) rgb(251, 251, 251);&quot;&gt;Flink asynchronously checkpoints&lt;/font&gt;&lt;/div&gt;&lt;div style=&quot;color: rgb(63, 63, 63); scrollbar-color: rgb(226, 226, 226) rgb(251, 251, 251); font-family: &amp;quot;Comic Sans MS&amp;quot;;&quot;&gt;&lt;font style=&quot;scrollbar-color: rgb(226, 226, 226) rgb(251, 251, 251);&quot;&gt;this memory to its configured&lt;/font&gt;&lt;/div&gt;&lt;div style=&quot;color: rgb(63, 63, 63); scrollbar-color: rgb(226, 226, 226) rgb(251, 251, 251); font-family: &amp;quot;Comic Sans MS&amp;quot;;&quot;&gt;&lt;font style=&quot;scrollbar-color: rgb(226, 226, 226) rgb(251, 251, 251);&quot;&gt;State Backend (e.g. RocksDB)&lt;/font&gt;&lt;/div&gt;&lt;div style=&quot;color: rgb(63, 63, 63); scrollbar-color: rgb(226, 226, 226) rgb(251, 251, 251); font-family: &amp;quot;Comic Sans MS&amp;quot;;&quot;&gt;&lt;font style=&quot;scrollbar-color: rgb(226, 226, 226) rgb(251, 251, 251);&quot;&gt;for robust recovery.&lt;/font&gt;&lt;/div&gt;" style="shape=step;perimeter=stepPerimeter;whiteSpace=wrap;html=1;fixedSize=1;strokeColor=#009900;fillColor=#B3FF66;sketch=1;curveFitting=1;jiggle=2;" parent="1" vertex="1">
                     <mxGeometry x="2060" y="1700" width="220" height="90" as="geometry"/>
                 </mxCell>
-                <mxCell id="178" value="&lt;b&gt;Apache Kafka&lt;/b&gt;&lt;br&gt;(Message Broker)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;verticalAlign=top;spacingTop=10;sketch=1;fontSize=16;fontFamily=Comic Sans MS;" vertex="1" parent="1">
+                <mxCell id="178" value="&lt;b&gt;Apache Kafka&lt;/b&gt;&lt;br&gt;(Message Broker)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;verticalAlign=top;spacingTop=10;sketch=1;fontSize=16;fontFamily=Comic Sans MS;" parent="1" vertex="1">
                     <mxGeometry x="1630" y="1250" width="350" height="120" as="geometry"/>
                 </mxCell>
-                <mxCell id="179" value="Topic: mill-groundtruth" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;sketch=1;fontSize=14;fontFamily=Comic Sans MS;" vertex="1" parent="1">
+                <mxCell id="179" value="Topic: mill-groundtruth" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;sketch=1;fontSize=14;fontFamily=Comic Sans MS;" parent="1" vertex="1">
                     <mxGeometry x="1810" y="1320.5" width="160" height="35" as="geometry"/>
                 </mxCell>
-                <mxCell id="180" value="Topic: mill-predictions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;sketch=1;fontSize=14;fontFamily=Comic Sans MS;" vertex="1" parent="1">
+                <mxCell id="180" value="Topic: mill-predictions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;sketch=1;fontSize=14;fontFamily=Comic Sans MS;" parent="1" vertex="1">
                     <mxGeometry x="1641" y="1320.5" width="160" height="35" as="geometry"/>
                 </mxCell>
-                <mxCell id="182" value="" style="edgeStyle=orthogonalEdgeStyle;curved=1;rounded=1;html=1;strokeWidth=2;sketch=1;fontFamily=Comic Sans MS;entryX=0.381;entryY=-0.054;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1">
+                <mxCell id="182" value="" style="edgeStyle=orthogonalEdgeStyle;curved=1;rounded=1;html=1;strokeWidth=2;sketch=1;fontFamily=Comic Sans MS;entryX=0.381;entryY=-0.054;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" edge="1">
                     <mxGeometry relative="1" as="geometry">
                         <mxPoint x="1730" y="1376" as="sourcePoint"/>
                         <mxPoint x="1797.63" y="1432.44" as="targetPoint"/>
@@ -497,7 +497,7 @@
                         </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="184" value="" style="edgeStyle=orthogonalEdgeStyle;curved=1;rounded=1;html=1;strokeWidth=2;sketch=1;fontFamily=Comic Sans MS;entryX=0.381;entryY=-0.054;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1">
+                <mxCell id="184" value="" style="edgeStyle=orthogonalEdgeStyle;curved=1;rounded=1;html=1;strokeWidth=2;sketch=1;fontFamily=Comic Sans MS;entryX=0.381;entryY=-0.054;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" edge="1">
                     <mxGeometry relative="1" as="geometry">
                         <mxPoint x="1902" y="1378" as="sourcePoint"/>
                         <mxPoint x="1830" y="1431" as="targetPoint"/>
